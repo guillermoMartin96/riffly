@@ -16,3 +16,5 @@ frontend/playwright-report/
 bench/.cache/
 bench/.venv/
 .DS_Store
+frontend/e2e/.generated/
+*.tsbuildinfo

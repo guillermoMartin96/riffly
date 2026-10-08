@@ -9,8 +9,9 @@ from __future__ import annotations
 
 from jamrecall.transcription.base import AudioBuffer, DetectedNote, TranscriptionError
 
-# A minor-pentatonic figure, repeated over the recording length.
-_FIXTURE_PITCHES = [57, 60, 62, 64, 67, 64, 62, 60]
+# A deliberately artificial chromatic run (C3 upward), repeated over the recording length, so
+# fixture output can never be mistaken for a plausible transcription of a real phrase.
+_FIXTURE_PITCHES = [48, 49, 50, 51, 52, 53, 54, 55]
 
 
 class FixtureAdapter:
