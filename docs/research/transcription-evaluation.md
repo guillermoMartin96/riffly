@@ -1,0 +1,6 @@
+# Transcription research protocol
+Compare at minimum (1) a classical monophonic pitch tracker with onset segmentation (e.g. pYIN/librosa or aubio), and (2) a neural audio-to-MIDI candidate (e.g. Spotify Basic Pitch). Consider other viable alternatives only if practical. Verify current license, environment compatibility, maintenance, runtime and dependencies. Do not select by popularity.
+
+Build a small labeled guitar corpus: single notes, ascending/descending scales, rests, repeated same-pitch notes, varied tempo, clean electric and acoustic, room/mic conditions. Separate development and holdout examples; document recording consent and annotation method. Compare using a common event format and consistent pitch/onset tolerances; report precision, recall, F1, onset/offset errors, latency, CPU/RAM, installation friction, and failure cases. Use matched datasets and publish scripts. Include a deterministic baseline and explicitly distinguish test fixtures from real predictions.
+
+Decision gate: prepare DR with results, recommendation, limitations, reproducibility, and rollback plan. No production dependency until tech-lead approval. If no method is good enough, stop and request scope/quality decision; do not silently ship fake tabs.

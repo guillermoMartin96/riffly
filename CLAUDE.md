@@ -1,0 +1,3 @@
+# Claude Code instructions — JamRecall
+Read ENGINEERING_PLAYBOOK.md, docs/milestones/M1.md, and docs/proof/M1-proof.md.
+Work only on a feature branch; commit frequently and push to the branch when remote access is available. Never merge without approval. Intermediate commits may fail, but the final PR must pass all checks. Raise decision requests for irreversible choices, model selection, scope changes, privacy changes, or permission boundaries. Do not install incompatible Python versions or system dependencies without checking machine compatibility. Never claim generated fixture notes are audio transcription. Keep code, tests, docs, and proof evidence in sync.
