@@ -48,7 +48,7 @@ export default function App() {
           {config === null
             ? '…'
             : config.transcription
-              ? `${config.transcription.test_only ? 'TEST-ONLY engine' : 'Engine'}: ${config.transcription.engine} v${config.transcription.version}`
+              ? `${config.transcription.test_only ? 'TEST-ONLY engine' : 'Engine'}: ${config.transcription.engine}${config.transcription.validated ? '' : ' (provisional)'}`
               : 'No transcription engine'}
         </span>
       </header>

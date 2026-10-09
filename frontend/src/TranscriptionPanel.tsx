@@ -34,6 +34,12 @@ export function TranscriptionPanel({
           and riffs work without one.
         </p>
       )}
+      {engine && !engine.test_only && !engine.validated && (
+        <p className="notice" data-testid="provisional-engine">
+          Provisional engine: accuracy on real guitar recordings made with JamRecall has not been
+          validated yet. Expect missed or wrong notes.
+        </p>
+      )}
       {t?.test_only && (
         <p className="fixture-banner" role="status" data-testid="fixture-banner">
           TEST FIXTURE — these notes come from the test-only adapter “{t.engine}” and are NOT
@@ -42,12 +48,15 @@ export function TranscriptionPanel({
       )}
       {t && (
         <p className="provenance" data-testid="provenance">
-          Engine <code>{t.engine}</code> v{t.engine_version} · status{' '}
+          Engine <code>{t.engine}</code> <code title={t.engine_version}>{t.engine_version.split('/')[0]}</code> · status{' '}
           <strong data-testid="transcription-status">{t.status}</strong>
           {t.status === 'succeeded' && (
             <>
               {' '}
               · {t.notes.length} notes · processed in {t.processing_seconds?.toFixed(2)} s
+              {t.inference_seconds != null && (
+                <> (decode {t.decode_seconds?.toFixed(2)} s, inference {t.inference_seconds.toFixed(2)} s)</>
+              )}
             </>
           )}
         </p>

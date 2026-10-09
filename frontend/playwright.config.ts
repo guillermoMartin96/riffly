@@ -8,10 +8,10 @@ export const E2E_DATA_ROOT = resolve(import.meta.dirname, 'test-results/e2e-data
 const mic = fakeMicPath();
 
 // Each stack = isolated backend (own data dir + engine) + Vite dev server proxying to it.
-// No real transcription engine is approved yet, so E2E uses TEST-ONLY adapters, which the UI labels.
+// workflow: the real Basic Pitch engine (DR-0001). errors: the TEST-ONLY always-failing adapter.
 const stacks = {
-  fixture: { api: 8765, web: 5181, engine: process.env.JAMRECALL_E2E_ENGINE ?? 'fixture' },
-  failing: { api: 8766, web: 5182, engine: 'failing' },
+  workflow: { api: 8765, web: 5181, engine: process.env.JAMRECALL_E2E_ENGINE ?? 'basic-pitch' },
+  errors: { api: 8766, web: 5182, engine: 'failing' },
 };
 
 const chromiumMic = (extra: string[] = []) => ({
@@ -38,12 +38,12 @@ export default defineConfig({
     {
       name: 'workflow',
       testMatch: /workflow\.spec\.ts/,
-      use: { ...chromiumMic(['--use-fake-ui-for-media-stream']), baseURL: `http://127.0.0.1:${stacks.fixture.web}` },
+      use: { ...chromiumMic(['--use-fake-ui-for-media-stream']), baseURL: `http://127.0.0.1:${stacks.workflow.web}` },
     },
     {
       name: 'errors',
       testMatch: /errors\.spec\.ts/,
-      use: { ...chromiumMic(), baseURL: `http://127.0.0.1:${stacks.failing.web}` },
+      use: { ...chromiumMic(), baseURL: `http://127.0.0.1:${stacks.errors.web}` },
     },
   ],
   webServer: Object.entries(stacks).flatMap(([name, s]): NonNullable<PlaywrightTestConfig['webServer']> => [
@@ -54,10 +54,10 @@ export default defineConfig({
       env: {
         JAMRECALL_DATA_DIR: `${E2E_DATA_ROOT}/${name}`,
         JAMRECALL_TRANSCRIPTION_ENGINE: s.engine,
-        JAMRECALL_ALLOW_TEST_ADAPTERS: '1',
+        JAMRECALL_ALLOW_TEST_ADAPTERS: s.engine === 'failing' || s.engine === 'fixture' ? '1' : '0',
       },
       reuseExistingServer: false,
-      timeout: 60_000,
+      timeout: 120_000,
     },
     {
       command: `npx vite --port ${s.web}`,

@@ -25,6 +25,9 @@ function pluck(midi: number, seconds: number, seed: number): Float32Array {
   return out;
 }
 
+// Pitches of the phrase below, in order (rests omitted). Used by E2E to check real transcription.
+export const PHRASE_MIDI = [57, 60, 62, 64, 67, 64, 62];
+
 export function phraseWav(): Buffer {
   // A minor pentatonic phrase with a rest, then silence padding (the fake device loops the file).
   const notes: [number, number][] = [

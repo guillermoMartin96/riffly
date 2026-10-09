@@ -22,6 +22,7 @@ export interface Fingering {
 export interface NoteEvent {
   start_seconds: number;
   end_seconds: number;
+  duration_seconds: number;
   midi_pitch: number;
   confidence: number | null;
   fingering: Fingering | null;
@@ -38,6 +39,8 @@ export interface Transcription {
   created_at: string;
   completed_at: string | null;
   processing_seconds: number | null;
+  decode_seconds: number | null;
+  inference_seconds: number | null;
   fingering_method: string | null;
   notes: NoteEvent[];
 }
@@ -52,7 +55,14 @@ export interface Riff {
 }
 
 export interface AppConfig {
-  transcription: { engine: string; version: string; test_only: boolean } | null;
+  transcription: {
+    engine: string;
+    version: string;
+    test_only: boolean;
+    // false until the engine passes real-recording validation (DR-0001)
+    validated: boolean;
+    model_load_seconds: number;
+  } | null;
   accepted_mime_types: string[];
   max_upload_bytes: number;
   max_duration_seconds: number;

@@ -48,7 +48,8 @@ const base: Transcription = {
   id: 't', session_id: 's', engine: 'test-fixture', engine_version: '1', test_only: true,
   status: 'succeeded', error: null, created_at: '', completed_at: '', processing_seconds: 0.01,
   fingering_method: 'dp-hand-window-v1',
-  notes: [{ start_seconds: 0.25, end_seconds: 0.65, midi_pitch: 57, confidence: null,
+  decode_seconds: null, inference_seconds: null,
+  notes: [{ start_seconds: 0.25, end_seconds: 0.65, duration_seconds: 0.4, midi_pitch: 57, confidence: null,
             fingering: { string: 3, fret: 2, inferred: true, alternatives: 2 } }],
 };
 
@@ -58,7 +59,7 @@ describe('TranscriptionPanel', () => {
     render(
       <TranscriptionPanel
         {...props}
-        config={{ transcription: { engine: 'test-fixture', version: '1', test_only: true },
+        config={{ transcription: { engine: 'test-fixture', version: '1', test_only: true, validated: false, model_load_seconds: 0 },
                   accepted_mime_types: [], max_upload_bytes: 1, max_duration_seconds: 1 }}
         transcription={base}
       />,
@@ -86,6 +87,22 @@ describe('TranscriptionPanel', () => {
     );
     expect(screen.getByTestId('transcription-error')).toHaveTextContent('boom');
     expect(screen.queryByTestId('fixture-banner')).toBeNull();
+  });
+});
+
+describe('provisional engine', () => {
+  it('warns that a real but unvalidated engine is provisional', () => {
+    render(
+      <TranscriptionPanel
+        busy={false} error={null} disabled={false} onTranscribe={() => {}}
+        config={{ transcription: { engine: 'basic-pitch', version: '0.4.0+x', test_only: false, validated: false, model_load_seconds: 2 },
+                  accepted_mime_types: [], max_upload_bytes: 1, max_duration_seconds: 1 }}
+        transcription={{ ...base, engine: 'basic-pitch', test_only: false, inference_seconds: 0.1, decode_seconds: 0.01 }}
+      />,
+    );
+    expect(screen.getByTestId('provisional-engine')).toBeInTheDocument();
+    expect(screen.queryByTestId('fixture-banner')).toBeNull();
+    expect(screen.getByTestId('provenance')).toHaveTextContent('inference 0.10 s');
   });
 });
 

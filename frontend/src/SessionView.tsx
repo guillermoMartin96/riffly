@@ -82,7 +82,7 @@ export function SessionView({ sessionId, config, onRiffsChanged }: Props) {
       } catch (err) {
         setTranscribeError(message(err));
       }
-    }, 500);
+    }, 250);
     return () => window.clearInterval(id);
   }, [inProgress, sessionId]);
 

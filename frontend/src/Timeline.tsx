@@ -169,7 +169,9 @@ export function Timeline(props: Props) {
               >
                 {n.fingering.fret}
                 <title>
-                  {noteName(n.midi_pitch)} — inferred string {n.fingering.string}, fret{' '}
+                  {noteName(n.midi_pitch)}
+                  {n.confidence != null ? ` (confidence ${n.confidence.toFixed(2)})` : ''} — inferred
+                  string {n.fingering.string}, fret{' '}
                   {n.fingering.fret}
                   {n.fingering.alternatives > 0
                     ? ` (${n.fingering.alternatives} other playable position${n.fingering.alternatives > 1 ? 's' : ''})`

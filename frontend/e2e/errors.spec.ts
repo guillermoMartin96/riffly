@@ -53,7 +53,7 @@ test('processing failure is shown and persisted; missing audio is reported', asy
   await page.locator('input[name=title]').fill('Survivor');
   await page.getByRole('button', { name: 'Save riff' }).click();
   await expect(page.getByTestId('riff-item')).toHaveCount(1);
-  const dir = join(E2E_DATA_ROOT, 'failing', 'media', 'sessions', sessionId);
+  const dir = join(E2E_DATA_ROOT, 'errors', 'media', 'sessions', sessionId);
   for (const f of readdirSync(dir)) unlinkSync(join(dir, f));
 
   await page.reload();
