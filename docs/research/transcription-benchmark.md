@@ -79,6 +79,11 @@ smoke clip pitches `[54, 56, 58, 59, 61, 63, 65, 66]` match the reference exactl
 produce identical notes to the benchmark venv** → **PASS** (152 s wall incl. downloads). Not yet run on
 Linux; CI will exercise the install once the adapter is integrated.
 
+## After DR-0001
+Basic Pitch is integrated in the app with these parameters. `backend/tests/test_basic_pitch.py` checks
+that the app adapter reproduces this benchmark's notes exactly. The real-recording gate that
+compensates for the GuitarSet overlap is defined in `real-recording-validation-protocol.md`.
+
 ## Failure cases and limitations
 
 - pYIN misses fast notes (late voicing at onsets, `min_note_s` = 0.1 s) and merges leaps; Basic Pitch's

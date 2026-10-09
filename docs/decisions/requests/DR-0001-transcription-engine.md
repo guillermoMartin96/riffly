@@ -1,5 +1,5 @@
 # DR-0001 — Production transcription engine for M1
-Status: Proposed — tech lead's provisional approval of Option A, with conditions (2026-10-09); final approval pending
+Status: **Approved provisionally** by the tech lead (2026-10-09). Engine stays "provisional" until the real-recording gate passes
 Owner: Claude Code (implementation engineer)
 Date: 2026-10-09
 
@@ -71,3 +71,29 @@ was trained or tuned on.
 3. Whether pYIN should also be integrated now as a selectable fallback adapter, or kept in `bench/` only.
 
 ## Decision and date (leave blank pending approval)
+**2026-10-09: tech lead decision** (recorded verbatim in substance; the implementer did not self-approve)
+
+1. **Option A approved provisionally.** Integrate Basic Pitch 0.4.0 (ONNX) behind the existing
+   adapter. Keep the pinned environment, add clean-install and inference smoke tests to CI, and keep
+   the engine configurable and replaceable. Do not mark it fully validated until independent
+   real-guitar testing passes. Keep benchmark reproducibility and document the GuitarSet overlap.
+2. **Modified real-recording criteria approved.** Aggregate gate: onset F1 ≥ 0.80 and Basic Pitch ≥ pYIN.
+   Validation must cover clean acoustic melodies, fast riffs and wide leaps, and clean electric guitar,
+   plus distorted electric as an exploratory test that does not block M1. Recordings must not be known
+   to be in Basic Pitch's training data. References come from manual annotation or known
+   score/MIDI performances. Report onset F1, pitch correctness, note-end quality, per-recording results
+   and latency. Define tolerances and scoring first. Tune only on a separate dev set, never on the
+   holdout. On failure or a poorly performing condition: stop and raise a decision request.
+3. **pYIN stays in the benchmark only**: kept and compatible, not selectable in production.
+
+### Implementation status (2026-10-09)
+| Condition | Status |
+|---|---|
+| Adapter behind `TranscriptionAdapter`, configurable (`JAMRECALL_TRANSCRIPTION_ENGINE`, `none` disables) | Done: `backend/jamrecall/transcription/basic_pitch_adapter.py` |
+| Pinned environment | Done: `backend/requirements.lock` + `backend/install.sh`. Only deviation from the bench lock: `typing_extensions` 4.15.0 → 4.16.0 (needed by pydantic; basic-pitch has no upper bound). Parity test proves identical notes |
+| Clean-install + inference smoke tests in CI | Done: CI builds with `--no-cache-dir` via `install.sh` (pip-check guard) on ubuntu-24.04; `tests/test_basic_pitch.py` runs as its own step |
+| Provisional status visible | Done: `validated=false` in `/api/config`; UI shows "(provisional)" and a warning |
+| GuitarSet overlap documented | Done: `docs/research/transcription-benchmark.md` |
+| Validation protocol defined before evaluation | Done: `docs/research/real-recording-validation-protocol.md`, tooling `bench/jamrecall_bench/real.py` (dry run on synthetic audio only) |
+| Real-recording gate | **Pending recordings from the tech lead** |
+| pYIN benchmark-only | Done: not registered in `REAL_ADAPTERS`; bench code unchanged |

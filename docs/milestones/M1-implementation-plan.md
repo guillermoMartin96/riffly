@@ -97,17 +97,17 @@ get null string/fret.
   processing failure; missing audio.
 - CI (GitHub Actions): ruff + pytest; tsc + vitest + build; Playwright E2E.
 
-## Transcription research (gate C) — status 2026-10-09
+## Transcription (gates C/D) — status 2026-10-09
 
-Benchmark complete (`docs/research/transcription-benchmark.md`, `bench/`). DR-0001 recommends Basic Pitch
-0.4.0 (ONNX, mono post-process); the tech lead provisionally approved it with conditions. **Waiting for
-final approval before integration.** Key caveat: GuitarSet was in Basic Pitch's training data, so the
-tech lead's real recording, captured through the browser, is the deciding validation gate.
-pYIN is kept as a baseline and possible fallback. DR-0002 (PyAV/FFmpeg licensing) is open and does not block M1.
-
-Next after approval: `BasicPitchAdapter` behind `TranscriptionAdapter` (model loaded once at startup,
-decode via PyAV at 22,050 Hz, pinned deps added to the backend install and CI), E2E rerun with the real
-engine, then the real-recording validation gate.
+- Benchmark complete (`docs/research/transcription-benchmark.md`). DR-0001 Option A **approved
+  provisionally**; Basic Pitch 0.4.0 (ONNX) is integrated as the default engine behind
+  `TranscriptionAdapter` and labelled "provisional" until the real-recording gate passes.
+- Pipeline layers: capture (browser MediaRecorder) → preprocessing (`audio.decode_mono`, 22,050 Hz mono)
+  → inference (`BasicPitchAdapter`) → post-processing (`postprocess.monophonic`) → normalized note events
+  (`DetectedNote`: onset, offset, MIDI pitch, confidence) → fingering inference (`fingering.py`) → presentation.
+- Every transcription run is kept (history endpoint) for re-transcription and future corrections (DR-0003 proposed).
+- pYIN stays benchmark-only (DR-0001 decision 3). Licensing: DR-0002 (open, non-blocking).
+- **Remaining M1 gate**: real-recording validation (protocol + tooling ready; waiting for recordings).
 
 ## Risks
 
