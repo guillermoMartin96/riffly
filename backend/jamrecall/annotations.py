@@ -34,6 +34,8 @@ def validate_notes(notes: list[dict[str, Any]], duration: float) -> list[dict[st
         start, end, midi = n["start_seconds"], n["end_seconds"], n["midi_pitch"]
         if not (math.isfinite(start) and math.isfinite(end)):
             raise AnnotationError(422, "invalid_note", f"Note {i + 1}: times must be numbers")
+        # Validate the values that will be stored (4-decimal rounding).
+        start, end = round(float(start), 4), round(float(end), 4)
         if start < 0 or end <= start:
             raise AnnotationError(422, "invalid_note", f"Note {i + 1}: end must be after start ≥ 0")
         if end > duration + 1e-6:

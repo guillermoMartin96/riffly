@@ -199,3 +199,13 @@ def test_migration_upgrades_existing_database(tmp_path):
 def test_upload_without_capture_info_still_works(client):
     r = upload(client, wav_bytes(tone(1.0)))
     assert r.status_code == 201 and r.json()["capture_info"] is None
+
+
+def test_rounding_cannot_produce_zero_length_note(fixture_client, sid):
+    r = put(fixture_client, sid, [n(0.10001, 0.10002, 60)])
+    assert r.status_code == 422 and r.json()["code"] == "invalid_note"
+    r = fixture_client.post(
+        f"/api/sessions/{sid}/riffs",
+        json={"title": "x", "start_seconds": 0.1000001, "end_seconds": 0.1000002},
+    )
+    assert r.status_code == 422

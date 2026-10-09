@@ -11,10 +11,17 @@ from typing import Annotated, Any, Literal
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator
+from starlette.concurrency import run_in_threadpool
 
 from jamrecall import annotations, datastore, store
 from jamrecall.annotations import AnnotationError
-from jamrecall.audio import AudioDecodeError, decode_mono, peaks
+from jamrecall.audio import (
+    ANALYSIS_SAMPLE_RATE,
+    AudioDecodeError,
+    AudioTooLongError,
+    decode_mono,
+    peaks,
+)
 from jamrecall.config import ACCEPTED_MIME_TYPES, Settings
 from jamrecall.db import migrate, transaction
 from jamrecall.service import run_transcription
@@ -178,7 +185,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
         try:
-            buf = decode_mono(dest)
+            # Off the event loop; the duration limit is enforced while decoding.
+            buf = await run_in_threadpool(
+                decode_mono, dest, ANALYSIS_SAMPLE_RATE, settings.max_duration_seconds
+            )
+        except AudioTooLongError as exc:
+            _discard(dest)
+            raise ApiError(413, "too_long", "Recording exceeds the maximum duration") from exc
         except AudioDecodeError as exc:
             _discard(dest)
             raise ApiError(422, "undecodable_audio", str(exc)) from exc
@@ -368,6 +381,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             s = require_session(conn, session_id)
             if not (math.isfinite(start) and math.isfinite(end)):
                 raise ApiError(422, "invalid_range", "Start and end must be finite numbers")
+            start, end = round(start, 6), round(end, 6)  # validate what is stored
             if start < 0:
                 raise ApiError(422, "invalid_range", "Start must be >= 0")
             if end <= start:
