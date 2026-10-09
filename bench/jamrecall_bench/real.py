@@ -26,7 +26,8 @@ from jamrecall_bench.common import BENCH, CACHE, CORPUS, RESULTS, read_json, wri
 from jamrecall_bench.score import aggregate, clip_stats
 
 GATING = ("A", "B", "C")
-MINIMUMS = {"A": (2, 3, 60), "B": (2, 3, 60), "C": (2, 3, 60), "D": (1, 2, 0)}  # dev, holdout, notes
+# condition -> (min dev recordings, min holdout recordings, min holdout notes)
+MINIMUMS = {"A": (2, 3, 60), "B": (2, 3, 60), "C": (2, 3, 60), "D": (1, 2, 0)}
 GATE_F1 = 0.80
 POOR_F1 = 0.70  # proposed; awaiting tech-lead approval
 POOR_PITCH = 0.90  # proposed; awaiting tech-lead approval
@@ -58,7 +59,6 @@ def validate_reference(ref: dict, name: str) -> list[str]:
 
 def prepare(args) -> int:
     import soundfile as sf
-
     from jamrecall.audio import decode_mono  # the app's own decoder (backend venv)
 
     data_dir = Path(args.data_dir).resolve()
@@ -160,8 +160,9 @@ def score(args) -> int:
            "per_recording": per_rec, "summary": summary}
     write_json(results_dir(args.tag) / f"real-{args.method}.json", out)
     for k, v in summary.items():
-        print(f"  {k:18s} onset F1 {v['onset']['f1']:.3f}  pitch exact "
-              f"{v['pitch_on_onset_matched']['exact']:.3f}  +offset F1 {v['onset_offset']['f1']:.3f}")
+        exact = v["pitch_on_onset_matched"]["exact"]
+        print(f"  {k:18s} onset F1 {v['onset']['f1']:.3f}  pitch exact {exact:.3f}  "
+              f"+offset F1 {v['onset_offset']['f1']:.3f}")
     return 0
 
 
@@ -173,8 +174,9 @@ def gate(args) -> int:
     missing = []
     for cond, (n_dev, n_hold, n_notes) in MINIMUMS.items():
         dev, hold = counts.get((cond, "dev")), counts.get((cond, "holdout"))
-        if (dev or {}).get("recordings", 0) < n_dev or (hold or {}).get("recordings", 0) < n_hold \
-                or (hold or {}).get("notes", 0) < n_notes:
+        dev_n = (dev or {}).get("recordings", 0)
+        hold_n, hold_notes = (hold or {}).get("recordings", 0), (hold or {}).get("notes", 0)
+        if dev_n < n_dev or hold_n < n_hold or hold_notes < n_notes:
             missing.append(cond)
     key = "holdout/A+B+C"
     checks, poor = {}, []

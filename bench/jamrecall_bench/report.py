@@ -36,7 +36,8 @@ def fmt(x, pct=False):
 
 def main_table(rows, split):
     out = [
-        f"| Method | GuitarSet {split} onset P / R / **F1** | +offset F1 | median abs onset err (ms) "
+        f"| Method | GuitarSet {split} onset P / R / **F1** | +offset F1 "
+        f"| median abs onset err (ms) "
         f"| pitch exact / octave err (onset-matched) | Synthetic {split} onset F1 | +offset F1 |",
         "|---|---|---|---|---|---|---|",
     ]

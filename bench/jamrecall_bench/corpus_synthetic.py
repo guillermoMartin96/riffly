@@ -129,7 +129,8 @@ def main() -> None:
     )
     write_json(CORPUS / "synthetic" / "manifest.json", {
         "corpus": "synthetic",
-        "description": "Karplus-Strong plucked-string synthesis with exact labels. NOT real guitar.",
+        "description": "Karplus-Strong plucked-string synthesis with exact labels. "
+        "NOT real guitar.",
         "sample_rate": SR,
         "clips": clips,
     })

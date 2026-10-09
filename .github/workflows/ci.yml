@@ -19,6 +19,8 @@ jobs:
         run: PIP_FLAGS=--no-cache-dir sh install.sh
       - run: .venv/bin/ruff check .
       - run: .venv/bin/ruff format --check .
+      - name: Lint benchmark code
+        run: .venv/bin/ruff check ../bench
       - name: Basic Pitch inference smoke tests (browser formats, onset alignment, bench parity)
         run: .venv/bin/pytest -v tests/test_basic_pitch.py
       - name: Full backend test suite

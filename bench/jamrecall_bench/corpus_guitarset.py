@@ -1,6 +1,7 @@
 """Monophonic segments from GuitarSet v1.1.0 solo excerpts (real acoustic guitar, mic audio).
 
-Source: Xi, Bittner, Pauwels, Ye, Bello, "GuitarSet: A Dataset for Guitar Transcription", ISMIR 2018.
+Source: Xi, Bittner, Pauwels, Ye, Bello, "GuitarSet: A Dataset for Guitar Transcription",
+ISMIR 2018.
 Zenodo DOI 10.5281/zenodo.3371780, license CC BY 4.0. Six players recorded with a hexaphonic pickup;
 note annotations were derived per string from the hexaphonic signal and manually corrected by the
 authors. We use `audio_mono-mic` (reference microphone) and the `note_midi` annotations.
@@ -22,7 +23,6 @@ import hashlib
 import json
 from pathlib import Path
 
-import numpy as np
 import soundfile as sf
 
 from jamrecall_bench.common import CACHE, CORPUS, write_json

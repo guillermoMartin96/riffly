@@ -1,7 +1,8 @@
 """Resource profile of one method in a fresh process, on whole GuitarSet holdout solo recordings
 (20-60 s each, closer to a real practice take than the short segments).
 
-Usage: <venv>/bin/python -m jamrecall_bench.profile <method>   -> bench/results/profile-<method>.json
+Usage: <venv>/bin/python -m jamrecall_bench.profile <method>
+  -> bench/results/profile-<method>.json
 
 Measures: import + model load time, first-call latency (includes JIT/graph warm-up), warm
 real-time factor (processing seconds / audio seconds), CPU-seconds per wall-second (thread use),
