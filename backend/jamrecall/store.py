@@ -29,10 +29,10 @@ def _row(r: sqlite3.Row | None) -> dict[str, Any] | None:
 def insert_session(conn: sqlite3.Connection, **fields: Any) -> dict[str, Any]:
     conn.execute(
         """INSERT INTO sessions (id, audio_path, audio_mime, audio_bytes, audio_sha256,
-               duration_seconds, sample_rate, created_at)
+               duration_seconds, sample_rate, created_at, capture_info)
            VALUES (:id, :audio_path, :audio_mime, :audio_bytes, :audio_sha256,
-               :duration_seconds, :sample_rate, :created_at)""",
-        fields,
+               :duration_seconds, :sample_rate, :created_at, :capture_info)""",
+        {"capture_info": None} | fields,
     )
     return get_session(conn, fields["id"])  # type: ignore[return-value]
 

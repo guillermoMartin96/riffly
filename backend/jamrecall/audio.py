@@ -59,7 +59,7 @@ def decode_mono(path: Path, sample_rate: int = ANALYSIS_SAMPLE_RATE) -> AudioBuf
 
 def peaks(buffer: AudioBuffer, buckets: int) -> list[float]:
     """Max absolute amplitude per equal-width time bucket (for waveform display)."""
-    buckets = max(1, min(buckets, 4000))
+    buckets = max(1, min(buckets, 20000))
     x = np.abs(buffer.samples)
     edges = np.linspace(0, x.size, buckets + 1).astype(int)
     out = []

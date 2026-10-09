@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator
 
-from jamrecall import store
+from jamrecall import annotations, datastore, store
+from jamrecall.annotations import AnnotationError
 from jamrecall.audio import AudioDecodeError, decode_mono, peaks
 from jamrecall.config import ACCEPTED_MIME_TYPES, Settings
 from jamrecall.db import migrate, transaction
@@ -44,6 +46,27 @@ class RiffIn(BaseModel):
         if not v:
             raise ValueError("title must not be blank")
         return v
+
+
+class AnnotationNoteIn(BaseModel):
+    start_seconds: float
+    end_seconds: float
+    midi_pitch: int
+    technique: str | None = None
+
+
+class AnnotationIn(BaseModel):
+    notes: list[AnnotationNoteIn]
+    seed: str | None = None  # 'blank' or 'transcription:<id>'; recorded on creation only
+    split: Literal["dev", "holdout"] | None = None
+    condition: Literal["A", "B", "C", "D"] | None = None
+    method: Literal["manual", "score"] = "manual"
+    annotator: str | None = Field(default=None, max_length=120)
+    instrument: str | None = Field(default=None, max_length=500)
+    notes_text: str | None = Field(default=None, max_length=2000)
+
+
+MAX_CAPTURE_INFO = 8192
 
 
 def _base_mime(mime: str) -> str:
@@ -86,6 +109,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         }
         out["status"] = "ready" if audio_file(session).is_file() else "audio_missing"
+        out["capture_info"] = (
+            json.loads(session["capture_info"]) if session.get("capture_info") else None
+        )
         if "riff_count" in session:
             out["riff_count"] = session["riff_count"]
         return out
@@ -125,8 +151,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def create_session(
         audio: Annotated[UploadFile, File()],
         client_mime: Annotated[str | None, Form()] = None,
+        capture_info: Annotated[str | None, Form()] = None,
     ) -> dict[str, Any]:
         mime = _base_mime(client_mime or audio.content_type or "")
+        info = None
+        if capture_info:
+            # Browser-reported capture settings (sample rate, processing flags, user agent).
+            try:
+                parsed = json.loads(capture_info)
+            except ValueError:
+                parsed = None
+            if not isinstance(parsed, dict) or len(capture_info) > MAX_CAPTURE_INFO:
+                raise ApiError(422, "invalid_capture_info", "capture_info must be a JSON object")
+            info = json.dumps(parsed)
         if mime not in ACCEPTED_MIME_TYPES:
             raise ApiError(415, "unsupported_mime", f"Unsupported audio type '{mime or 'unknown'}'")
         data = await audio.read(settings.max_upload_bytes + 1)
@@ -160,6 +197,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 duration_seconds=round(duration, 6),
                 sample_rate=buf.sample_rate,
                 created_at=store.now_iso(),
+                capture_info=info,
             )
         return session_out(s)
 
@@ -264,6 +302,62 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 | {"note_count": len(store.list_notes(conn, t["id"]))}
                 for t in store.list_transcriptions(conn, session_id)
             ]
+
+    # --- reference annotations, export, deletion ------------------------------------------------
+
+    def annotation_call(fn: Any, *args: Any) -> Any:
+        try:
+            return fn(*args)
+        except AnnotationError as exc:
+            raise ApiError(exc.status, exc.code, exc.message) from exc
+
+    @app.get("/api/sessions/{session_id}/annotation")
+    def get_annotation(session_id: str) -> dict[str, Any]:
+        with transaction(settings.db_path) as conn:
+            require_session(conn, session_id)
+            a = annotations.get(conn, session_id)
+        if a is None:
+            raise ApiError(404, "no_annotation", "This session has no reference annotation")
+        return a
+
+    @app.put("/api/sessions/{session_id}/annotation")
+    def put_annotation(session_id: str, body: AnnotationIn) -> dict[str, Any]:
+        with transaction(settings.db_path) as conn:
+            s = require_session(conn, session_id)
+            return annotation_call(annotations.save, conn, s, body.model_dump())
+
+    @app.post("/api/sessions/{session_id}/annotation/finalize")
+    def finalize_annotation(session_id: str) -> dict[str, Any]:
+        with transaction(settings.db_path) as conn:
+            require_session(conn, session_id)
+            return annotation_call(annotations.finalize, conn, session_id)
+
+    @app.post("/api/sessions/{session_id}/annotation/reopen")
+    def reopen_annotation(session_id: str) -> dict[str, Any]:
+        with transaction(settings.db_path) as conn:
+            require_session(conn, session_id)
+            return annotation_call(annotations.reopen, conn, session_id)
+
+    @app.get("/api/sessions/{session_id}/export")
+    def export_session(session_id: str) -> Response:
+        with transaction(settings.db_path) as conn:
+            require_session(conn, session_id)
+            data = datastore.export_zip(settings, conn, session_id)
+        return Response(
+            data,
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f'attachment; filename="jamrecall-{session_id[:8]}.zip"'
+            },
+        )
+
+    @app.delete("/api/sessions/{session_id}", status_code=204)
+    def delete_session(session_id: str) -> Response:
+        # Permanent: removes the recording, riffs, transcriptions and annotation (DR-0003).
+        with transaction(settings.db_path) as conn:
+            if not datastore.delete_session(settings, conn, session_id):
+                raise ApiError(404, "session_not_found", "No session with that id")
+        return Response(status_code=204)
 
     # --- riffs ----------------------------------------------------------------------------------
 

@@ -61,6 +61,36 @@ MIGRATIONS: list[str] = [
     ALTER TABLE transcriptions ADD COLUMN decode_seconds REAL;
     ALTER TABLE transcriptions ADD COLUMN inference_seconds REAL;
     """,
+    # 3: capture metadata; reference annotations kept separate from model output (DR-0003)
+    """
+    ALTER TABLE sessions ADD COLUMN capture_info TEXT;
+    CREATE TABLE annotations (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL UNIQUE REFERENCES sessions(id),
+        status TEXT NOT NULL CHECK (status IN ('draft','final')),
+        split TEXT CHECK (split IS NULL OR split IN ('dev','holdout')),
+        condition TEXT CHECK (condition IS NULL OR condition IN ('A','B','C','D')),
+        method TEXT NOT NULL CHECK (method IN ('manual','score')),
+        seed TEXT NOT NULL,
+        annotator TEXT,
+        instrument TEXT,
+        notes_text TEXT,
+        split_locked INTEGER NOT NULL DEFAULT 0,
+        revision INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        finalized_at TEXT
+    );
+    CREATE TABLE annotation_notes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        annotation_id TEXT NOT NULL REFERENCES annotations(id),
+        start_seconds REAL NOT NULL CHECK (start_seconds >= 0),
+        end_seconds REAL NOT NULL CHECK (end_seconds > start_seconds),
+        midi_pitch INTEGER NOT NULL CHECK (midi_pitch BETWEEN 0 AND 127),
+        technique TEXT
+    );
+    CREATE INDEX annotation_notes_annotation ON annotation_notes(annotation_id, start_seconds);
+    """,
 ]
 
 
