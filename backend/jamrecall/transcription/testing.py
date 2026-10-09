@@ -18,6 +18,7 @@ class FixtureAdapter:
     engine = "test-fixture"
     version = "1"
     test_only = True
+    validated = False
     sample_rate = 8000
 
     def transcribe(self, audio: AudioBuffer) -> list[DetectedNote]:
@@ -35,6 +36,7 @@ class FailingAdapter:
     engine = "test-failing"
     version = "1"
     test_only = True
+    validated = False
     sample_rate = 8000
 
     def transcribe(self, audio: AudioBuffer) -> list[DetectedNote]:

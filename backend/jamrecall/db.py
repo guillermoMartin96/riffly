@@ -56,6 +56,11 @@ MIGRATIONS: list[str] = [
     );
     CREATE INDEX riffs_session ON riffs(session_id, start_seconds);
     """,
+    # 2: stage timings for latency profiling
+    """
+    ALTER TABLE transcriptions ADD COLUMN decode_seconds REAL;
+    ALTER TABLE transcriptions ADD COLUMN inference_seconds REAL;
+    """,
 ]
 
 

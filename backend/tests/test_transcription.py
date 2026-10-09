@@ -28,7 +28,13 @@ def test_unknown_engine_refused(tmp_path):
 
 def test_fixture_transcription_is_flagged_test_only(fixture_client):
     cfg = fixture_client.get("/api/config").json()
-    assert cfg["transcription"] == {"engine": "test-fixture", "version": "1", "test_only": True}
+    assert cfg["transcription"] == {
+        "engine": "test-fixture",
+        "version": "1",
+        "test_only": True,
+        "validated": False,
+        "model_load_seconds": 0.0,
+    }
     sid = upload(fixture_client, wav_bytes(tone(3.0))).json()["id"]
     started = fixture_client.post(f"/api/sessions/{sid}/transcriptions")
     assert started.status_code == 202

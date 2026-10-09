@@ -46,6 +46,8 @@ class TranscriptionAdapter(Protocol):
     test_only: bool
     # Sample rate the adapter wants its AudioBuffer decoded at.
     sample_rate: int
+    # False until the engine has passed real-recording validation (DR-0001); shown in the UI.
+    validated: bool
 
     def transcribe(self, audio: AudioBuffer) -> list[DetectedNote]: ...
 

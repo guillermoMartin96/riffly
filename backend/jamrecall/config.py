@@ -18,6 +18,8 @@ def _truthy(value: str | None) -> bool:
 class Settings:
     data_dir: Path
     # Name of the transcription engine to run, or None when no engine is configured.
+    # from_env() defaults to "basic-pitch" (DR-0001); JAMRECALL_TRANSCRIPTION_ENGINE=none
+    # disables transcription.
     transcription_engine: str | None = None
     # Test-only adapters (fixture, failing) are refused unless this is set.
     allow_test_adapters: bool = False
@@ -37,6 +39,6 @@ class Settings:
         default_dir = Path(__file__).resolve().parents[2] / "var"
         return cls(
             data_dir=Path(os.environ.get("JAMRECALL_DATA_DIR", default_dir)),
-            transcription_engine=os.environ.get("JAMRECALL_TRANSCRIPTION_ENGINE") or None,
+            transcription_engine=os.environ.get("JAMRECALL_TRANSCRIPTION_ENGINE") or "basic-pitch",
             allow_test_adapters=_truthy(os.environ.get("JAMRECALL_ALLOW_TEST_ADAPTERS")),
         )

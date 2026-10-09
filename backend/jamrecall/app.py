@@ -111,6 +111,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "engine": adapter.engine,
                 "version": adapter.version,
                 "test_only": adapter.test_only,
+                "validated": adapter.validated,
+                "model_load_seconds": round(getattr(adapter, "load_seconds", 0.0), 3),
             },
             "accepted_mime_types": list(ACCEPTED_MIME_TYPES),
             "max_upload_bytes": settings.max_upload_bytes,
@@ -205,11 +207,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "created_at": t["created_at"],
             "completed_at": t["completed_at"],
             "processing_seconds": t["processing_seconds"],
+            "decode_seconds": t["decode_seconds"],
+            "inference_seconds": t["inference_seconds"],
             "fingering_method": t["fingering_method"],
             "notes": [
                 {
                     "start_seconds": n["start_seconds"],
                     "end_seconds": n["end_seconds"],
+                    "duration_seconds": round(n["end_seconds"] - n["start_seconds"], 6),
                     "midi_pitch": n["midi_pitch"],
                     "confidence": n["confidence"],
                     "fingering": None
@@ -248,6 +253,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if t is None:
                 raise ApiError(404, "no_transcription", "This session has not been transcribed")
             return transcription_out(conn, t)
+
+    @app.get("/api/sessions/{session_id}/transcriptions")
+    def transcription_history(session_id: str) -> list[dict[str, Any]]:
+        # Every run is kept (newest first) so outputs can later be compared, corrected or redone.
+        with transaction(settings.db_path) as conn:
+            require_session(conn, session_id)
+            return [
+                {k: v for k, v in transcription_out(conn, t).items() if k != "notes"}
+                | {"note_count": len(store.list_notes(conn, t["id"]))}
+                for t in store.list_transcriptions(conn, session_id)
+            ]
 
     # --- riffs ----------------------------------------------------------------------------------
 

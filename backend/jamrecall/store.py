@@ -78,6 +78,14 @@ def latest_transcription(conn: sqlite3.Connection, session_id: str) -> dict[str,
     )
 
 
+def list_transcriptions(conn: sqlite3.Connection, session_id: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT * FROM transcriptions WHERE session_id = ? ORDER BY created_at DESC, rowid DESC",
+        (session_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def mark_transcription(conn: sqlite3.Connection, tid: str, status: str, **fields: Any) -> None:
     sets = ["status = :status"] + [f"{k} = :{k}" for k in fields]
     conn.execute(

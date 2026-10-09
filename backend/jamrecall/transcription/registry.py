@@ -1,6 +1,8 @@
 """Engine selection.
 
-No production engine is registered until the tech lead approves one (DR-0001).
+Production engine: Basic Pitch (DR-0001, provisionally approved 2026-10-09). pYIN stays in
+bench/ only (DR-0001 decision 3). Engines are constructed once per app process (model loaded
+at startup).
 """
 
 from __future__ import annotations
@@ -16,7 +18,14 @@ TEST_ADAPTERS: dict[str, Callable[[], TranscriptionAdapter]] = {
     "failing": FailingAdapter,
 }
 
-REAL_ADAPTERS: dict[str, Callable[[], TranscriptionAdapter]] = {}
+
+def _basic_pitch() -> TranscriptionAdapter:
+    from jamrecall.transcription.basic_pitch_adapter import BasicPitchAdapter
+
+    return BasicPitchAdapter()
+
+
+REAL_ADAPTERS: dict[str, Callable[[], TranscriptionAdapter]] = {"basic-pitch": _basic_pitch}
 
 
 class EngineConfigError(Exception):
@@ -25,7 +34,7 @@ class EngineConfigError(Exception):
 
 def build_adapter(settings: Settings) -> TranscriptionAdapter | None:
     name = settings.transcription_engine
-    if name is None:
+    if name is None or name == "none":
         return None
     if name in REAL_ADAPTERS:
         return REAL_ADAPTERS[name]()

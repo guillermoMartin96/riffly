@@ -29,7 +29,9 @@ def run_transcription(settings: Settings, adapter: TranscriptionAdapter, tid: st
         if not Path(path).is_file():
             raise FileNotFoundError("audio_missing: original recording file not found")
         audio = decode_mono(path, adapter.sample_rate)
+        decoded = time.perf_counter()
         raw = adapter.transcribe(audio)
+        inferred = time.perf_counter()
         notes = normalize_notes(raw, session["duration_seconds"])
         fingerings = fingering.assign([n.midi_pitch for n in notes])
     except (AudioDecodeError, FileNotFoundError) as exc:
@@ -47,6 +49,8 @@ def run_transcription(settings: Settings, adapter: TranscriptionAdapter, tid: st
             tid,
             "succeeded",
             fingering_method=fingering.METHOD,
+            decode_seconds=round(decoded - started, 4),
+            inference_seconds=round(inferred - decoded, 4),
             processing_seconds=round(time.perf_counter() - started, 4),
             completed_at=store.now_iso(),
         )
