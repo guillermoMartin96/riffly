@@ -97,24 +97,27 @@ get null string/fret.
   processing failure; missing audio.
 - CI (GitHub Actions): ruff + pytest; tsc + vitest + build; Playwright E2E.
 
-## Transcription research (gate C)
+## Transcription research (gate C) — status 2026-10-09
 
-Candidates: (1) librosa pYIN + onset/pitch-change segmentation; (2) Spotify Basic Pitch (ONNX), raw
-and with a monophonic constraint; plus a deterministic test-fixture baseline to show the metrics
-separate fixtures from real predictions. Corpora: (a) synthetic plucked-string corpus (Karplus-Strong,
-exact labels; clearly labelled synthetic) covering single notes, scales, rests, repeated pitches,
-tempos, noise/reverb; (b) GuitarSet v1.1.0 (CC BY 4.0, real acoustic guitar, mic audio, annotated)
-solo excerpts, split by player (dev 00–02 / holdout 03–05). Metrics via `mir_eval`: note P/R/F1 at
-50 ms onset / 50 cent tolerance (with and without offsets), onset/offset error, pitch/octave errors,
-real-time factor, model-load time, peak RSS. Output: `docs/research/transcription-benchmark.md` +
-`docs/decisions/requests/DR-0001-transcription-engine.md`. **Stop for approval.**
+Benchmark complete (`docs/research/transcription-benchmark.md`, `bench/`). DR-0001 recommends Basic Pitch
+0.4.0 (ONNX, mono post-process); the tech lead provisionally approved it with conditions. **Waiting for
+final approval before integration.** Key caveat: GuitarSet was in Basic Pitch's training data, so the
+tech lead's real recording, captured through the browser, is the deciding validation gate.
+pYIN is kept as a baseline and possible fallback. DR-0002 (PyAV/FFmpeg licensing) is open and does not block M1.
+
+Next after approval: `BasicPitchAdapter` behind `TranscriptionAdapter` (model loaded once at startup,
+decode via PyAV at 22,050 Hz, pinned deps added to the backend install and CI), E2E rerun with the real
+engine, then the real-recording validation gate.
 
 ## Risks
 
 - Chrome MediaRecorder WebM lacks duration/cues → browser `duration` may be `Infinity`; server-measured
   duration is canonical and the UI uses it.
 - AAC (`audio/mp4`, Safari) encoder priming may offset decoded vs. played timeline; tested where possible.
-- No clean-electric real recordings in the corpus (GuitarSet is acoustic); I cannot play guitar, so a
-  human-recorded microphone take is needed from the tech lead for final acceptance evidence.
+- No electric-guitar recordings in the evidence (known limitation, DR-0001). I can't play guitar, so the
+  tech lead will provide a microphone take for the validation gate.
+- Basic Pitch training-set overlap with GuitarSet inflates its GuitarSet scores.
+- PyAV wheel bundles GPL x264/x265 libraries next to LGPL FFmpeg; licensing review DR-0002 must finish before distribution.
+- macOS: Chromium audio capture blocks on the host app's OS microphone permission, so E2E injects audio via Web Audio there.
 - Basic Pitch install relies on a `--no-deps` workaround; pinned and documented if chosen.
 - pYIN is CPU-heavy; latency measured, not assumed.

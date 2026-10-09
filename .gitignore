@@ -14,7 +14,8 @@ frontend/test-results/
 frontend/playwright-report/
 # benchmark caches (downloaded datasets, generated audio)
 bench/.cache/
-bench/.venv/
+bench/.venv*/
+bench/.cache/
 .DS_Store
 frontend/e2e/.generated/
 *.tsbuildinfo

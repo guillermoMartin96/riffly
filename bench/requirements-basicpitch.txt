@@ -1,0 +1,16 @@
+# Candidate 2: Spotify Basic Pitch 0.4.0 with its bundled ONNX model.
+# basic-pitch's own metadata requires tensorflow-macos<2.15.1 on macOS + Python 3.12, which has no
+# wheels, so it is installed with --no-deps (see install-basicpitch.sh) and these deps are pinned here.
+librosa==1.0.0
+numpy==2.3.5
+scipy==1.18.1
+soundfile==0.14.0
+mir_eval==0.8.2
+pretty_midi==0.2.11.post0
+resampy==0.4.2
+scikit-learn==1.8.0
+typing-extensions==4.15.0
+onnxruntime==1.23.2
+# resampy 0.4.2 imports pkg_resources, removed from newer setuptools
+setuptools<81
+psutil==7.1.3

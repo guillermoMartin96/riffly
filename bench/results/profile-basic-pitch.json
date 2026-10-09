@@ -1,0 +1,35 @@
+{
+ "environment": {
+  "cpu_count": 16,
+  "machine": "x86_64",
+  "platform": "macOS-26.2-x86_64-i386-64bit",
+  "python": "3.12.15"
+ },
+ "files": [
+  "03_BN1-129-Eb_solo_mic.wav",
+  "03_Funk2-119-G_solo_mic.wav",
+  "04_Jazz1-200-B_solo_mic.wav",
+  "04_Rock2-142-D_solo_mic.wav",
+  "05_SS1-100-C#_solo_mic.wav",
+  "05_BN3-119-G_solo_mic.wav"
+ ],
+ "first_call": {
+  "audio_s": 22.3,
+  "latency_s": 0.53
+ },
+ "import_and_model_load_s": 2.19,
+ "method": "basic-pitch",
+ "params": {
+  "frame_thresh": 0.4,
+  "min_note_ms": 58.0,
+  "mono": true,
+  "onset_thresh": 0.7
+ },
+ "peak_rss_mb": 308.9,
+ "warm": {
+  "audio_s": 134.8,
+  "cpu_s_per_wall_s": 6.97,
+  "real_time_factor": 0.0118,
+  "wall_s": 1.59
+ }
+}
