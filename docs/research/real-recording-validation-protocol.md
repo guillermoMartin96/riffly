@@ -1,7 +1,8 @@
 # Real-recording validation protocol (DR-0001 decision 2)
 
-Status: **defined before any recording was evaluated** (2026-10-09). Changing criteria, tolerances or
-splits after scoring the holdout requires a new decision request.
+Status: **defined before any recording was evaluated** (2026-10-09). Thresholds approved provisionally
+by the tech lead on 2026-10-09. Changing criteria, tolerances or splits after scoring the holdout requires
+a new decision request.
 
 ## Purpose
 Basic Pitch's GuitarSet scores are inflated by training-data overlap, so the transcription engine stays
@@ -36,9 +37,15 @@ One JSON file per recording in `bench/real/references/<name>.json`:
  "notes": [{"start": 0.512, "end": 0.903, "midi": 64, "technique": null}]}
 ```
 
-The reference must never be derived from either engine's output.
-- **manual**: annotate each played note on the original audio (for example in Sonic Visualiser, with a
-  spectrogram and zoom to ≤ 10 ms). Onset = start of the attack transient; pitch = fretted note
+References are made in JamRecall's **Reference annotation** panel (or as JSON in the same format) and
+exported with `python -m jamrecall.manage export-references --out bench/real/references`. Only
+**finalized** annotations are exported or scored. **Holdout** references must not be derived from either
+engine's output: start them blank. Dev and exploratory references may be started from model output.
+The seed is recorded, and the scorer excludes model-seeded holdout references (DR-0004 asks the tech lead
+to confirm this rule).
+- **manual**: annotate each played note on the original audio with the in-app editor (zoom the timeline,
+  set the playhead, listen to single notes, nudge in 10 ms steps); external tools such as Sonic
+  Visualiser are also fine. Onset = start of the attack transient; pitch = fretted note
   (A4 = 440 Hz equal temperament); end = when the note is stopped, or the next note's onset for
   legato, or when it is no longer audible. A second listening pass checks every note.
 - **score**: play a pre-written phrase (pitches known from its tab or MIDI) to a click after a count-in.
@@ -65,10 +72,13 @@ tag (pitch = the note at its onset). They are included in the main score and als
 ## Pass criteria
 Gate (approved by the tech lead, 2026-10-09), on the **holdout** recordings of conditions A+B+C combined:
 1. Basic Pitch onset F1 ≥ 0.80, and
-2. Basic Pitch onset F1 ≥ pYIN onset F1 on the same recordings.
+2. Basic Pitch onset F1 ≥ pYIN onset F1 on the same recordings, and
+3. for **each** gating condition A, B, C (provisionally approved 2026-10-09): Basic Pitch holdout onset
+   F1 ≥ 0.70 **and** ≥ 90% of onset-matched notes have the correct MIDI pitch.
 
-"Major recording condition performs poorly" (proposed, awaiting tech-lead approval): for any gating
-condition A, B or C, Basic Pitch holdout onset F1 < 0.70, or exact-pitch rate < 90%.
+Reported separately for every recording, condition and aggregate: precision, recall, pitch accuracy,
+and note-end accuracy (offset-aware F1 and median end error). The gate is INCOMPLETE while any gating
+condition is below its minimum recording or note count.
 Condition D is reported but never gates M1.
 
 If the gate fails or a gating condition performs poorly: **stop**, raise a decision request with the

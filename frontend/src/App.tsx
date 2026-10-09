@@ -107,7 +107,17 @@ export default function App() {
         </aside>
         <main className="main">
           {selected ? (
-            <SessionView key={selected} sessionId={selected} config={config} onRiffsChanged={refresh} />
+            <SessionView
+              key={selected}
+              sessionId={selected}
+              config={config}
+              onRiffsChanged={refresh}
+              onSessionDeleted={async () => {
+                window.location.hash = '';
+                setSelected(null);
+                await refresh();
+              }}
+            />
           ) : (
             <p className="hint empty-state">Record a phrase or open a recording to begin.</p>
           )}

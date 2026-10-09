@@ -2,7 +2,8 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-const apiTarget = process.env.JAMRECALL_API_URL ?? 'http://127.0.0.1:8000';
+// Default API port 8700 (scripts/dev.sh); 8000 is often taken by other local tools.
+const apiTarget = process.env.JAMRECALL_API_URL ?? 'http://127.0.0.1:8700';
 
 export default defineConfig({
   plugins: [react()],

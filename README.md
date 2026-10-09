@@ -15,18 +15,18 @@ passes validation on real guitar recordings (`docs/research/real-recording-valid
 
 ## Run locally
 ```sh
-# backend (http://127.0.0.1:8000); install.sh pins everything and adds basic-pitch with --no-deps (DR-0001)
-sh backend/install.sh
-cd backend && .venv/bin/python -m uvicorn --factory jamrecall.app:get_app --host 127.0.0.1 --port 8000
-
-# frontend (http://127.0.0.1:5173, proxies /api to the backend)
-cd frontend
-npm ci
-npm run dev
+./scripts/dev.sh        # installs on first run; API on 127.0.0.1:8700, app on http://127.0.0.1:5173
 ```
-Data lives in `var/` (SQLite + original recordings) unless `JAMRECALL_DATA_DIR` is set. The backend loads the
-Basic Pitch model at startup (~4 s extra). `JAMRECALL_TRANSCRIPTION_ENGINE=none` disables transcription;
-`fixture` + `JAMRECALL_ALLOW_TEST_ADAPTERS=1` selects the test-only adapter, which the UI labels TEST FIXTURE.
+Manual testing and annotation guide: `docs/testing/manual-testing-guide.md`. Manual equivalent:
+`sh backend/install.sh`, then
+`backend/.venv/bin/python -m uvicorn --factory jamrecall.app:get_app --host 127.0.0.1 --port 8700 --app-dir backend`,
+and `cd frontend && npm ci && npm run dev`.
+
+Data lives in `var/` (SQLite + original recordings, git-ignored) unless `JAMRECALL_DATA_DIR` is set.
+`backend/.venv/bin/python -m jamrecall.manage where|list|export-session|export-references|delete-session|wipe`
+manages it. The backend loads the Basic Pitch model at startup (~4 s extra).
+`JAMRECALL_TRANSCRIPTION_ENGINE=none` disables transcription; `fixture` + `JAMRECALL_ALLOW_TEST_ADAPTERS=1`
+selects the test-only adapter, which the UI labels TEST FIXTURE.
 
 ## Tests
 ```sh

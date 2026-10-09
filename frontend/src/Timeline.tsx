@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState, type PointerEvent } from 'react';
-import type { NoteEvent, Riff } from './api';
+import type { AnnotationNote, NoteEvent, Riff } from './api';
 import { noteName, STRINGS } from './music';
 import { clamp, roundMs } from './timing';
 
 const RULER_H = 20;
 const WAVE_H = 70;
 const PITCH_H = 22;
+const REF_H = 22;
 const STRING_GAP = 16;
-const TAB_TOP = RULER_H + WAVE_H + PITCH_H + 14;
+const REF_TOP = RULER_H + WAVE_H + PITCH_H;
+const TAB_TOP = REF_TOP + REF_H + 14;
 const HEIGHT = TAB_TOP + STRING_GAP * 5 + 18;
 const LABEL_W = 22;
 
@@ -21,6 +23,7 @@ interface Props {
   pxPerSecond: number;
   peaks: number[];
   notes: NoteEvent[];
+  referenceNotes?: AnnotationNote[];
   riffs: Riff[];
   time: number;
   selection: Selection | null;
@@ -136,6 +139,26 @@ export function Timeline(props: Props) {
           >
             {noteName(n.midi_pitch)}
           </text>
+        ))}
+        {/* reference annotation lane (human ground truth, separate from model output) */}
+        {props.referenceNotes && props.referenceNotes.length > 0 && (
+          <text x={2} y={REF_TOP + 15} className="lane-label">
+            ref
+          </text>
+        )}
+        {(props.referenceNotes ?? []).map((n, i) => (
+          <g key={`ref${i}`} data-testid="ref-note">
+            <rect
+              className="ref-note"
+              x={x(n.start_seconds)}
+              y={REF_TOP + 3}
+              width={Math.max(2, (n.end_seconds - n.start_seconds) * pxPerSecond)}
+              height={REF_H - 6}
+            />
+            <text x={x(n.start_seconds) + 2} y={REF_TOP + 15} className="ref-label">
+              {noteName(n.midi_pitch)}
+            </text>
+          </g>
         ))}
         {/* tab staff: inferred fingering */}
         {STRINGS.map((s, i) => (

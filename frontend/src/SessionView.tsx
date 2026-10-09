@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { api, ApiError, type AppConfig, type Riff, type Session, type Transcription } from './api';
+import {
+  api,
+  ApiError,
+  type AnnotationNote,
+  type AppConfig,
+  type Riff,
+  type Session,
+  type Transcription,
+} from './api';
+import { AnnotationPanel } from './AnnotationPanel';
 import { RiffList } from './RiffList';
 import { Timeline, type Selection } from './Timeline';
 import { TranscriptionPanel } from './TranscriptionPanel';
@@ -10,11 +19,12 @@ interface Props {
   sessionId: string;
   config: AppConfig | null;
   onRiffsChanged: () => void;
+  onSessionDeleted: () => void;
 }
 
 const message = (err: unknown) => (err instanceof ApiError ? err.message : String(err));
 
-export function SessionView({ sessionId, config, onRiffsChanged }: Props) {
+export function SessionView({ sessionId, config, onRiffsChanged, onSessionDeleted }: Props) {
   const [session, setSession] = useState<Session | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [peaks, setPeaks] = useState<number[]>([]);
@@ -28,6 +38,9 @@ export function SessionView({ sessionId, config, onRiffsChanged }: Props) {
   const [formError, setFormError] = useState<string | null>(null);
   const [activeRiff, setActiveRiff] = useState<{ id: string; loop: boolean } | null>(null);
   const [pxPerSecond, setPxPerSecond] = useState(120);
+  const [refNotes, setRefNotes] = useState<AnnotationNote[]>([]);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const onRefNotes = useCallback((n: AnnotationNote[]) => setRefNotes(n), []);
 
   const missing = session?.status === 'audio_missing';
   const player = usePlayer(session && !missing ? api.audioUrl(session.id) : null);
@@ -55,7 +68,7 @@ export function SessionView({ sessionId, config, onRiffsChanged }: Props) {
         loadRiffs().catch((e) => setLoadError(message(e)));
         if (s.status === 'ready') {
           api
-            .peaks(sessionId, Math.min(4000, Math.ceil(s.duration_seconds * 40)))
+            .peaks(sessionId, Math.min(20000, Math.ceil(s.duration_seconds * 200)))
             .then((p) => !cancelled && setPeaks(p.peaks))
             .catch(() => undefined);
         }
@@ -156,6 +169,16 @@ export function SessionView({ sessionId, config, onRiffsChanged }: Props) {
     }
   }
 
+  async function deleteSession() {
+    try {
+      player.pause();
+      await api.deleteSession(sessionId);
+      onSessionDeleted();
+    } catch (err) {
+      setLoadError(message(err));
+    }
+  }
+
   function playRiff(r: Riff, loop: boolean) {
     setActiveRiff({ id: r.id, loop });
     applySelection({ start: r.start_seconds, end: r.end_seconds });
@@ -182,6 +205,21 @@ export function SessionView({ sessionId, config, onRiffsChanged }: Props) {
           · {session.audio_mime} · {(session.audio_bytes / 1024).toFixed(1)} KB · sha256{' '}
           <code title={session.audio_sha256}>{session.audio_sha256.slice(0, 12)}…</code>
         </p>
+        <div className="row-start">
+          <a className="button-link" href={api.exportUrl(session.id)} download>
+            Export .zip
+          </a>
+          {confirmDelete ? (
+            <>
+              <button className="danger" onClick={deleteSession}>
+                Permanently delete recording, riffs, transcriptions and annotation
+              </button>
+              <button onClick={() => setConfirmDelete(false)}>Cancel</button>
+            </>
+          ) : (
+            <button onClick={() => setConfirmDelete(true)}>Delete recording…</button>
+          )}
+        </div>
       </header>
 
       {missing ? (
@@ -230,6 +268,7 @@ export function SessionView({ sessionId, config, onRiffsChanged }: Props) {
         pxPerSecond={pxPerSecond}
         peaks={peaks}
         notes={notes}
+        referenceNotes={refNotes}
         riffs={riffs}
         time={player.time}
         selection={selection}
@@ -245,6 +284,16 @@ export function SessionView({ sessionId, config, onRiffsChanged }: Props) {
         disabled={missing}
         onTranscribe={transcribe}
       />
+
+      {!missing && (
+        <AnnotationPanel
+          session={session}
+          transcription={transcription?.status === 'succeeded' ? transcription : null}
+          playhead={player.time}
+          onAudition={(start, end) => player.play({ start, end, loop: false })}
+          onNotesChange={onRefNotes}
+        />
+      )}
 
       <section className="panel" aria-label="Save riff">
         <h3>Save a riff</h3>

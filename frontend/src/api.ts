@@ -10,6 +10,39 @@ export interface Session {
   created_at: string;
   status: 'ready' | 'audio_missing';
   riff_count?: number;
+  capture_info: Record<string, unknown> | null;
+}
+
+export type Split = 'dev' | 'holdout';
+export type Condition = 'A' | 'B' | 'C' | 'D';
+
+export interface AnnotationNote {
+  start_seconds: number;
+  end_seconds: number;
+  midi_pitch: number;
+  technique: string | null;
+}
+
+export interface AnnotationFields {
+  split: Split | null;
+  condition: Condition | null;
+  method: 'manual' | 'score';
+  annotator: string | null;
+  instrument: string | null;
+  notes_text: string | null;
+}
+
+export interface Annotation extends AnnotationFields {
+  id: string;
+  session_id: string;
+  status: 'draft' | 'final';
+  seed: string; // 'blank' or 'transcription:<id>:<engine>@<version>'
+  split_locked: boolean;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+  finalized_at: string | null;
+  notes: AnnotationNote[];
 }
 
 export interface Fingering {
@@ -100,10 +133,11 @@ export const api = {
   config: () => request<AppConfig>('/api/config'),
   listSessions: () => request<Session[]>('/api/sessions'),
   getSession: (id: string) => request<Session>(`/api/sessions/${id}`),
-  createSession: (blob: Blob, mime: string) => {
+  createSession: (blob: Blob, mime: string, captureInfo?: Record<string, unknown>) => {
     const form = new FormData();
     form.append('audio', blob, 'recording');
     form.append('client_mime', mime);
+    if (captureInfo) form.append('capture_info', JSON.stringify(captureInfo));
     return request<Session>('/api/sessions', { method: 'POST', body: form });
   },
   audioUrl: (id: string) => `/api/sessions/${id}/audio`,
@@ -122,4 +156,20 @@ export const api = {
       body: JSON.stringify({ title, start_seconds: start, end_seconds: end }),
     }),
   deleteRiff: (id: string) => request<void>(`/api/riffs/${id}`, { method: 'DELETE' }),
+  deleteSession: (id: string) => request<void>(`/api/sessions/${id}`, { method: 'DELETE' }),
+  exportUrl: (id: string) => `/api/sessions/${id}/export`,
+  getAnnotation: (id: string) => request<Annotation>(`/api/sessions/${id}/annotation`),
+  saveAnnotation: (
+    id: string,
+    body: AnnotationFields & { notes: AnnotationNote[]; seed?: string },
+  ) =>
+    request<Annotation>(`/api/sessions/${id}/annotation`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  finalizeAnnotation: (id: string) =>
+    request<Annotation>(`/api/sessions/${id}/annotation/finalize`, { method: 'POST' }),
+  reopenAnnotation: (id: string) =>
+    request<Annotation>(`/api/sessions/${id}/annotation/reopen`, { method: 'POST' }),
 };

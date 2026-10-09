@@ -13,6 +13,9 @@ Assumptions made during M1 that a reviewer may want to challenge. Each one says 
 | 7 | Synthetic Karplus-Strong audio is valid for integration tests, not for accuracy claims | Labelled synthetic everywhere | – |
 | 8 | Chromium's fake-capture path (Linux CI) and Web Audio injection (macOS) exercise the same MediaRecorder/upload code as a real microphone | Both modes pass the same E2E; only the capture source differs | A real microphone shows codec or sample-rate behaviour the fakes don't |
 | 9 | A single local user; no auth needed | M1 scope; server binds 127.0.0.1 | Multi-user or hosted use |
-| 10 | Local, indefinite retention is acceptable for M1 | **Pending decision DR-0003** | Tech lead chooses otherwise |
+| 10 | Local, indefinite retention with user deletion is acceptable for M1 | DR-0003 approved 2026-10-09 | Hosted or multi-user use |
 | 11 | Licensing is acceptable for local development | DR-0002 (non-blocking) | Any distribution or public deployment |
 | 12 | `typing_extensions` 4.16.0 (vs 4.15.0 in the bench lock) does not change Basic Pitch output | Parity test: identical notes to the benchmark pipeline | Parity test fails |
+| 13 | The browser's `duration` for Chrome MediaRecorder WebM can be up to one Opus frame (60 ms) shorter than the server-decoded length; the start is aligned | Measured 2026-10-09: first packet pts 0, Opus pre-skip 0, last 60 ms packet at 4.977 s, decoded to 5.037 s | A take shows a start offset between playback and notes |
+| 14 | Holdout references seeded from model output are not independent evidence | Protocol; DR-0004 (confirmation pending) | Tech lead chooses DR-0004 option B |
+| 15 | Port 8700 (API) and 5173 (app) are free on the tech lead's Mac; port 8000 is used by another local FastAPI app | Checked 2026-10-09; `scripts/dev.sh` refuses busy ports | – |

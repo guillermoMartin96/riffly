@@ -29,8 +29,12 @@ GATING = ("A", "B", "C")
 # condition -> (min dev recordings, min holdout recordings, min holdout notes)
 MINIMUMS = {"A": (2, 3, 60), "B": (2, 3, 60), "C": (2, 3, 60), "D": (1, 2, 0)}
 GATE_F1 = 0.80
-POOR_F1 = 0.70  # proposed; awaiting tech-lead approval
-POOR_PITCH = 0.90  # proposed; awaiting tech-lead approval
+POOR_F1 = 0.70  # per gating condition; provisionally approved 2026-10-09
+POOR_PITCH = 0.90  # exact-pitch rate per gating condition; provisionally approved 2026-10-09
+
+
+def is_engine_seed(seed: str | None) -> bool:
+    return bool(seed) and seed.startswith("transcription:")
 
 
 def results_dir(tag: str) -> Path:
@@ -48,6 +52,8 @@ def validate_reference(ref: dict, name: str) -> list[str]:
         errs.append(f"{name}: condition must be one of {sorted(MINIMUMS)}")
     if ref.get("method") not in ("manual", "score"):
         errs.append(f"{name}: method must be manual or score")
+    if ref.get("status", "final") != "final":
+        errs.append(f"{name}: annotation is not finalized (status {ref.get('status')})")
     notes = ref.get("notes") or []
     if not notes:
         errs.append(f"{name}: no reference notes")
@@ -98,6 +104,7 @@ def prepare(args) -> int:
             "notes": [{"start": float(n["start"]), "end": float(n["end"]), "midi": int(n["midi"]),
                        "technique": n.get("technique")} for n in ref["notes"]],
             "tags": {"condition": ref["condition"], "method": ref["method"],
+                     "seed": ref.get("seed", "blank"), "revision": ref.get("revision"),
                      "session_id": ref["session_id"], "audio_sha256": digest},
         })
     for e in errors:
@@ -109,8 +116,11 @@ def prepare(args) -> int:
 
 
 def _counts(clips: list[dict]) -> dict:
+    """Recordings/notes that count toward the minimums (engine-seeded holdout refs excluded)."""
     c: dict = defaultdict(lambda: {"recordings": 0, "notes": 0})
     for clip in clips:
+        if clip["split"] == "holdout" and is_engine_seed(clip["tags"].get("seed")):
+            continue
         k = (clip["tags"]["condition"], clip["split"])
         c[k]["recordings"] += 1
         c[k]["notes"] += len(clip["notes"])
@@ -135,7 +145,7 @@ def score(args) -> int:
             [clip_stats(c["notes"], to_notes(feats[c["id"]], p)) for c in dev])["onset"]["f1"])
         tuned, params = best, best
 
-    per_rec, groups = {}, defaultdict(list)
+    per_rec, groups, excluded = {}, defaultdict(list), []
     for c in clips:
         t0 = time.perf_counter()
         est = to_notes(feats[c["id"]], params)
@@ -148,6 +158,11 @@ def score(args) -> int:
             "split": split, "condition": cond, "duration_s": c["duration"],
             "processing_s": round(proc, 3), "real_time_factor": round(proc / c["duration"], 4),
         }
+        if split == "holdout" and is_engine_seed(c["tags"].get("seed")):
+            # Protocol: a holdout reference seeded from engine output is not independent evidence.
+            per_rec[c["id"]]["excluded_from_holdout"] = "reference seeded from engine output"
+            excluded.append(c["id"])
+            continue
         groups[(split, cond)].append((s, s_plain))
         if cond in GATING:
             groups[(split, "A+B+C")].append((s, s_plain))
@@ -157,6 +172,7 @@ def score(args) -> int:
         for (split, cond), v in sorted(groups.items())
     }
     out = {"method": args.method, "params": params, "tuned_on_real_dev": tuned,
+           "excluded_holdout_engine_seeded": excluded,
            "per_recording": per_rec, "summary": summary}
     write_json(results_dir(args.tag) / f"real-{args.method}.json", out)
     for k, v in summary.items():
@@ -196,10 +212,11 @@ def gate(args) -> int:
     else:
         verdict = "FAIL"
     result = {"verdict": verdict, "checks": checks, "poor_conditions": poor,
+              "excluded_holdout_engine_seeded": bp.get("excluded_holdout_engine_seeded", []),
               "conditions_below_minimum": missing,
               "exploratory_D": bp["summary"].get("holdout/D", {}).get("onset"),
-              "thresholds": {"gate_f1": GATE_F1, "poor_f1_proposed": POOR_F1,
-                             "poor_pitch_exact_proposed": POOR_PITCH}}
+              "thresholds": {"gate_f1": GATE_F1, "condition_min_onset_f1": POOR_F1,
+                             "condition_min_pitch_exact": POOR_PITCH}}
     write_json(d / "real-gate.json", result)
     print(json.dumps(result, indent=1))
     return {"PASS": 0, "FAIL": 1, "INCOMPLETE": 2}[verdict]

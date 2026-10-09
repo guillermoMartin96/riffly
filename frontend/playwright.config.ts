@@ -37,7 +37,7 @@ export default defineConfig({
   projects: [
     {
       name: 'workflow',
-      testMatch: /workflow\.spec\.ts/,
+      testMatch: /(workflow|annotation)\.spec\.ts/,
       use: { ...chromiumMic(['--use-fake-ui-for-media-stream']), baseURL: `http://127.0.0.1:${stacks.workflow.web}` },
     },
     {

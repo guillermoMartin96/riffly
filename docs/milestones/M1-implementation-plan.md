@@ -107,7 +107,12 @@ get null string/fret.
   (`DetectedNote`: onset, offset, MIDI pitch, confidence) → fingering inference (`fingering.py`) → presentation.
 - Every transcription run is kept (history endpoint) for re-transcription and future corrections (DR-0003 proposed).
 - pYIN stays benchmark-only (DR-0001 decision 3). Licensing: DR-0002 (open, non-blocking).
-- **Remaining M1 gate**: real-recording validation (protocol + tooling ready; waiting for recordings).
+- **Scope change (tech lead, 2026-10-09)**: a minimal reference-annotation editor (correct, add and delete notes,
+  adjust timing), export (zip + protocol JSON), and session deletion, so the tech lead can produce trustworthy
+  references. Editing notes as a product feature is still an M1 non-goal; annotations never modify model output.
+- Manual testing: `docs/testing/manual-testing-guide.md`; launcher `scripts/dev.sh`.
+- **Remaining M1 gate**: real-recording validation (protocol + tooling + annotation UI ready; waiting for recordings).
+  Interim Codex review on a draft PR.
 
 ## Risks
 

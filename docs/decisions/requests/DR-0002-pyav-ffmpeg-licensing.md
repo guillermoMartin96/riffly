@@ -1,7 +1,7 @@
 # DR-0002 — Licensing review: PyAV / bundled FFmpeg and other native libraries
 Status: Open — review requested; **not blocking local M1 development** (tech lead, 2026-10-09).
 **Must be resolved before any public deployment or distribution.**
-Owner: Claude Code (implementation engineer); reviewer: tech lead / legal counsel
+Owner: Claude Code, technical licensing investigation and documentation (assigned by the tech lead, 2026-10-09); legal approval: counsel
 Date: 2026-10-09 (updated after the Basic Pitch integration)
 
 This is an engineering inventory, not legal advice. The obligations listed are the ones commonly
@@ -69,3 +69,8 @@ Name the licensing review owner and the milestone by which it must be resolved.
 ## Decision and date (leave blank pending approval)
 2026-10-09, tech lead: review opened as non-blocking for local M1 development. Resolution required before
 public deployment. Owner and deadline: pending.
+
+2026-10-09, tech lead: Claude owns the technical investigation and documentation. Material licensing
+risks must be resolved before public deployment. Unresolved legal or distribution questions go to new
+decision requests. **A technical review does not replace legal approval.** Status: inventory and
+obligations documented above; no legal opinion has been obtained; nothing is distributed.

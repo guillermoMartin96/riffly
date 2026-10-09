@@ -1,5 +1,5 @@
 # DR-0003 — Retention of recordings and transcription outputs; basis for future corrections
-Status: Proposed — needs tech-lead decision (privacy/retention, per CLAUDE.md)
+Status: **Approved** (tech lead, 2026-10-09)
 Owner: Claude Code (implementation engineer)
 Date: 2026-10-09
 
@@ -39,10 +39,23 @@ Tests: `test_retranscription_keeps_history`, `test_delete_riff_keeps_session_aud
 machine. Before any hosted or multi-user milestone, Option C plus a written privacy notice becomes necessary.
 
 ## Cost, risk, reversibility
-Option A has no cost and is fully reversible. Correction storage is designed (separate layer) but not
-built in M1, because note editing is an M1 non-goal.
+Option A has no cost and is fully reversible. (Updated 2026-10-09: on the tech lead's request, correction
+storage and a minimal annotation editor were built so that reference annotations can be produced;
+see "Implemented" below.)
 
 ## Decision needed from tech lead
 Approve Option A (local, indefinite, user-deletable via `var/`) as the M1 retention policy, or choose B/C.
 
 ## Decision and date (leave blank pending approval)
+2026-10-09, tech lead: **Option A approved.** Keep original recordings and immutable transcription runs
+locally; store corrections separately; keep recordings out of Git; provide a clear deletion mechanism;
+document where data is stored.
+
+Implemented (2026-10-09):
+- Corrections live in `annotations` / `annotation_notes`, separate from `note_events`, with seed
+  provenance, revision count, and a split that locks once finalized.
+- `var/` is git-ignored (recordings and database). Exports go to the browser's Downloads folder.
+- Deletion: in-app **Delete recording…** (two-step confirm; `DELETE /api/sessions/{id}`) and CLI
+  `python -m jamrecall.manage delete-session <id> --yes` / `wipe --yes`. Both are tested to remove the
+  database rows and the media directory.
+- Data locations: `docs/testing/manual-testing-guide.md` §2 and `python -m jamrecall.manage where`.

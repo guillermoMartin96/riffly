@@ -67,3 +67,17 @@ Real-recording validation: protocol defined before evaluation
 (`docs/research/real-recording-validation-protocol.md`). Tooling dry run on the synthetic E2E session
 gave verdict INCOMPLETE (exit 2) as designed, and a sha256-mismatched reference was refused. **No real
 recordings evaluated yet.**
+
+### 2026-10-09 — manual-testing workflow (annotation, export, deletion)
+| Command | Result |
+|---|---|
+| `cd backend && .venv/bin/pytest` | **58 passed** (adds 9 annotation/export/deletion/CLI/migration tests) |
+| `cd frontend && npx vitest run` | **43 passed** (adds pitch parsing and annotation rules) |
+| `cd frontend && npx playwright test` (macOS, `webaudio`) | **6 passed**, incl. `annotation.spec.ts`: start from model output → delete false positive → fix pitch (F#4) → nudge +10 ms → add missed note at 4.600 s → save → reload (persisted; **model output byte-identical**) → overlap rejected → finalize (split locked) → export zip (original audio, reference, runs, metadata; sha256 intact) → delete recording (rows + media gone); holdout + model seed shows a warning |
+| `./scripts/dev.sh` with Node 18.7 on PATH | switches to Node 25.4.0 via nvm; API on 8700, app on 5173; refuses a busy port (port 8000 is held by an unrelated local FastAPI app) |
+| `jamrecall_bench.real` dry run (synthetic E2E take) | model-seeded holdout reference excluded; verdict INCOMPLETE (exit 2) |
+
+Timing finding: for Chrome MediaRecorder WebM the browser `duration` (4.977 s) is one 60 ms Opus frame
+shorter than the decoded length (5.037 s). The first packet pts is 0 and the Opus pre-skip is 0, so the
+start is aligned and notes and riffs match playback (assumption 13).
+Screenshot: `frontend/test-results/evidence/20-annotation.png`.

@@ -46,6 +46,15 @@ export function Recorder({ onSaved }: { onSaved: (s: Session) => void }) {
       return;
     }
     streamRef.current = stream;
+    const track = stream.getAudioTracks()[0];
+    // Stored with the session so evaluation can report the real capture conditions.
+    const captureInfo: Record<string, unknown> = {
+      track_settings: { ...(track?.getSettings?.() ?? {}), deviceId: undefined, groupId: undefined },
+      track_label: track?.label ?? null,
+      requested_constraints: GUITAR_AUDIO_CONSTRAINTS,
+      user_agent: navigator.userAgent,
+      recorded_at: new Date().toISOString(),
+    };
     const chunks: Blob[] = [];
     let recorder: MediaRecorder;
     try {
@@ -57,6 +66,8 @@ export function Recorder({ onSaved }: { onSaved: (s: Session) => void }) {
       return;
     }
     recorderRef.current = recorder;
+    captureInfo.mime_type = recorder.mimeType || mimeType;
+    captureInfo.audio_bits_per_second = recorder.audioBitsPerSecond ?? null;
     recorder.ondataavailable = (e) => {
       if (e.data.size > 0) chunks.push(e.data);
     };
@@ -75,7 +86,7 @@ export function Recorder({ onSaved }: { onSaved: (s: Session) => void }) {
       }
       setPhase('uploading');
       try {
-        const session = await api.createSession(blob, recorder.mimeType || mimeType);
+        const session = await api.createSession(blob, recorder.mimeType || mimeType, captureInfo);
         setPhase('idle');
         onSaved(session);
       } catch (err) {
