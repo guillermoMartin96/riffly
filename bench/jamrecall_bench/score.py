@@ -34,12 +34,23 @@ def clip_stats(ref: list[dict], est: list[dict]) -> dict:
     if not ref or not est:
         return dict(s) | {"onset_err": [], "offset_err": [], "pitch_diff": []}
     on = mir_eval.transcription.match_notes(
-        r_iv, r_hz, e_iv, e_hz, onset_tolerance=ONSET_TOL, pitch_tolerance=PITCH_TOL_CENTS,
+        r_iv,
+        r_hz,
+        e_iv,
+        e_hz,
+        onset_tolerance=ONSET_TOL,
+        pitch_tolerance=PITCH_TOL_CENTS,
         offset_ratio=None,
     )
     off = mir_eval.transcription.match_notes(
-        r_iv, r_hz, e_iv, e_hz, onset_tolerance=ONSET_TOL, pitch_tolerance=PITCH_TOL_CENTS,
-        offset_ratio=OFFSET_RATIO, offset_min_tolerance=OFFSET_MIN,
+        r_iv,
+        r_hz,
+        e_iv,
+        e_hz,
+        onset_tolerance=ONSET_TOL,
+        pitch_tolerance=PITCH_TOL_CENTS,
+        offset_ratio=OFFSET_RATIO,
+        offset_min_tolerance=OFFSET_MIN,
     )
     onset_only = mir_eval.transcription.match_note_onsets(r_iv, e_iv, onset_tolerance=ONSET_TOL)
     s["tp_onset"] = len(on)
@@ -79,10 +90,12 @@ def aggregate(stats: list[dict]) -> dict:
         "onset_error_ms": {
             "mean_signed": round(1000 * float(np.mean(onset_err)), 1) if onset_err else None,
             "median_abs": round(1000 * float(np.median(np.abs(onset_err))), 1)
-            if onset_err else None,
+            if onset_err
+            else None,
         },
         "offset_error_ms_median_abs": round(1000 * float(np.median(np.abs(offset_err))), 1)
-        if offset_err else None,
+        if offset_err
+        else None,
         "pitch_on_onset_matched": {
             "n": int(pd.size),
             "exact": round(float(np.sum(pd == 0)) / n_pd, 4),

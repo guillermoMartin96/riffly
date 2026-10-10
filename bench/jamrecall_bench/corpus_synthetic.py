@@ -78,13 +78,24 @@ def phrases(transpose: int) -> dict[str, list[tuple[int | None, float]]]:
         "scale_up": [(root + i, 0.5) for i in major],
         "scale_down": [(root + 12 + 12 - i - 12, 0.5) for i in major],
         "pentatonic_rests": [
-            (root + pent[0], 0.5), (None, 0.5), (root + pent[1], 0.5), (root + pent[2], 0.5),
-            (None, 1.0), (root + pent[3], 0.5), (root + pent[4], 0.5), (None, 0.5),
+            (root + pent[0], 0.5),
+            (None, 0.5),
+            (root + pent[1], 0.5),
+            (root + pent[2], 0.5),
+            (None, 1.0),
+            (root + pent[3], 0.5),
+            (root + pent[4], 0.5),
+            (None, 0.5),
             (root + pent[5], 1.0),
         ],
         "repeated_notes": [(root + 7, 0.5)] * 4 + [(root + 5, 0.5)] * 3 + [(root + 7, 1.0)],
-        "wide_leaps": [(45 + transpose, 0.5), (69 + transpose, 0.5), (50 + transpose, 0.5),
-                       (74 + transpose, 0.5), (43 + transpose, 1.0)],
+        "wide_leaps": [
+            (45 + transpose, 0.5),
+            (69 + transpose, 0.5),
+            (50 + transpose, 0.5),
+            (74 + transpose, 0.5),
+            (43 + transpose, 1.0),
+        ],
         "riff_16ths": [(root + x, 0.25) for x in (0, 3, 5, 3, 7, 5, 3, 0, 10, 7, 5, 3, 0, 0)],
     }
 
@@ -105,8 +116,13 @@ def build_split(split: str, seed: int, transposes: list[int]) -> list[dict]:
                     for midi, beats in seq:
                         dur = beats * beat
                         if midi is not None:
-                            notes.append({"start": round(t, 6), "end": round(t + dur * 0.92, 6),
-                                          "midi": int(midi)})
+                            notes.append(
+                                {
+                                    "start": round(t, 6),
+                                    "end": round(t + dur * 0.92, 6),
+                                    "midi": int(midi),
+                                }
+                            )
                         t += dur
                     total = t + 0.5
                     y = add_condition(render(notes, total, rng), cond, rng)
@@ -115,11 +131,21 @@ def build_split(split: str, seed: int, transposes: list[int]) -> list[dict]:
                     path = out_dir / f"{cid}.wav"
                     path.parent.mkdir(parents=True, exist_ok=True)
                     sf.write(path, y.astype(np.float32), SR, subtype="PCM_16")
-                    clips.append({
-                        "id": cid, "split": split, "audio": str(path.relative_to(CORPUS)),
-                        "duration": round(total, 6), "notes": notes,
-                        "tags": {"phrase": name, "bpm": bpm, "condition": cond, "transpose": tr},
-                    })
+                    clips.append(
+                        {
+                            "id": cid,
+                            "split": split,
+                            "audio": str(path.relative_to(CORPUS)),
+                            "duration": round(total, 6),
+                            "notes": notes,
+                            "tags": {
+                                "phrase": name,
+                                "bpm": bpm,
+                                "condition": cond,
+                                "transpose": tr,
+                            },
+                        }
+                    )
     return clips
 
 
@@ -127,16 +153,21 @@ def main() -> None:
     clips = build_split("dev", seed=1, transposes=[0, 5]) + build_split(
         "holdout", seed=2, transposes=[2, 7]
     )
-    write_json(CORPUS / "synthetic" / "manifest.json", {
-        "corpus": "synthetic",
-        "description": "Karplus-Strong plucked-string synthesis with exact labels. "
-        "NOT real guitar.",
-        "sample_rate": SR,
-        "clips": clips,
-    })
-    print(f"synthetic: {len(clips)} clips, "
-          f"{sum(c['duration'] for c in clips) / 60:.1f} min, "
-          f"{sum(len(c['notes']) for c in clips)} notes")
+    write_json(
+        CORPUS / "synthetic" / "manifest.json",
+        {
+            "corpus": "synthetic",
+            "description": "Karplus-Strong plucked-string synthesis with exact labels. "
+            "NOT real guitar.",
+            "sample_rate": SR,
+            "clips": clips,
+        },
+    )
+    print(
+        f"synthetic: {len(clips)} clips, "
+        f"{sum(c['duration'] for c in clips) / 60:.1f} min, "
+        f"{sum(len(c['notes']) for c in clips)} notes"
+    )
 
 
 if __name__ == "__main__":

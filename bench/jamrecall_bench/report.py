@@ -56,20 +56,29 @@ def main_table(rows, split):
 
 def tag_table(rows, key, prefix):
     methods = [m for m in rows if m != "fixture"]
-    tags = sorted({t for m in methods for t in rows[m]["results"][key]["by_tag"]
-                   if t.startswith(prefix)})
-    out = ["| " + prefix.rstrip("=") + " | notes | " + " | ".join(LABELS[m] for m in methods)
-           + " |", "|---|---|" + "---|" * len(methods)]
+    tags = sorted(
+        {t for m in methods for t in rows[m]["results"][key]["by_tag"] if t.startswith(prefix)}
+    )
+    out = [
+        "| " + prefix.rstrip("=") + " | notes | " + " | ".join(LABELS[m] for m in methods) + " |",
+        "|---|---|" + "---|" * len(methods),
+    ]
     for t in tags:
         n = rows[methods[0]]["results"][key]["by_tag"][t]["n_ref"]
-        out.append(f"| {t.split('=', 1)[1]} | {n} | " + " | ".join(
-            fmt(rows[m]["results"][key]["by_tag"][t]["f1"]) for m in methods) + " |")
+        out.append(
+            f"| {t.split('=', 1)[1]} | {n} | "
+            + " | ".join(fmt(rows[m]["results"][key]["by_tag"][t]["f1"]) for m in methods)
+            + " |"
+        )
     return "\n".join(out)
 
 
 def profile_table():
-    out = ["| Method | import + model load (s) | first call (s / audio s) | warm real-time factor "
-           "| CPU-s per wall-s | peak RSS (MB) |", "|---|---|---|---|---|---|"]
+    out = [
+        "| Method | import + model load (s) | first call (s / audio s) | warm real-time factor "
+        "| CPU-s per wall-s | peak RSS (MB) |",
+        "|---|---|---|---|---|---|",
+    ]
     for m in ("pyin", "basic-pitch"):
         p = RESULTS / f"profile-{m}.json"
         if not p.exists():

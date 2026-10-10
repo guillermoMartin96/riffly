@@ -22,8 +22,12 @@ import soundfile as sf
 from jamrecall_bench.common import CACHE, RESULTS, read_json, write_json
 
 FILES = [
-    "03_BN1-129-Eb_solo", "03_Funk2-119-G_solo", "04_Jazz1-200-B_solo",
-    "04_Rock2-142-D_solo", "05_SS1-100-C#_solo", "05_BN3-119-G_solo",
+    "03_BN1-129-Eb_solo",
+    "03_Funk2-119-G_solo",
+    "04_Jazz1-200-B_solo",
+    "04_Rock2-142-D_solo",
+    "05_SS1-100-C#_solo",
+    "05_BN3-119-G_solo",
 ]
 
 
@@ -71,8 +75,10 @@ def main() -> None:
         },
         "peak_rss_mb": round(rss_mb, 1),
         "environment": {
-            "python": platform.python_version(), "machine": platform.machine(),
-            "cpu_count": os.cpu_count(), "platform": platform.platform(),
+            "python": platform.python_version(),
+            "machine": platform.machine(),
+            "cpu_count": os.cpu_count(),
+            "platform": platform.platform(),
         },
     }
     write_json(RESULTS / f"profile-{method}.json", out)

@@ -9,6 +9,7 @@ Validation status is provisional until the real-recording gate passes (DR-0001 d
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ from jamrecall.transcription.postprocess import monophonic
 log = logging.getLogger(__name__)
 
 N_OVERLAPPING_FRAMES = 30
+PARAMS_FILE = Path(__file__).with_name("basic_pitch_params.json")
 
 
 @dataclass(frozen=True)
@@ -32,6 +34,12 @@ class BasicPitchParams:
     min_freq_hz: float = 75.0  # below low E (82.4 Hz)
     max_freq_hz: float = 1400.0  # above the 20th fret on high E (1046.5 Hz)
     mono: bool = True
+
+    @classmethod
+    def app_default(cls) -> BasicPitchParams:
+        """The parameters the app runs, from basic_pitch_params.json (shared with bench/)."""
+        data = json.loads(PARAMS_FILE.read_text())
+        return cls(**{k: v for k, v in data.items() if not k.startswith("_")})
 
     def tag(self) -> str:
         return (
@@ -56,7 +64,7 @@ class BasicPitchAdapter:
                 "basic-pitch is not installed; run backend/install.sh (see DR-0001)"
             ) from exc
         assert AUDIO_SAMPLE_RATE == self.sample_rate
-        self.params = params or BasicPitchParams()
+        self.params = params or BasicPitchParams.app_default()
         self.version = f"0.4.0+icassp2022-onnx/{self.params.tag()}"
         model_path = Path(ICASSP_2022_MODEL_PATH).parent / "nmp.onnx"
         t0 = time.perf_counter()

@@ -22,6 +22,7 @@ FMIN, FMAX = 75.0, 1400.0  # E2 = 82.4 Hz; 20th fret on high E = C6 = 1046.5 Hz
 
 # --- pYIN -----------------------------------------------------------------------------------
 
+
 def pyin_analyse(path: Path) -> dict[str, np.ndarray]:
     import librosa
 
@@ -31,8 +32,10 @@ def pyin_analyse(path: Path) -> dict[str, np.ndarray]:
     )
     onset_env = librosa.onset.onset_strength(y=y, sr=SR, hop_length=HOP)
     return {
-        "f0": f0.astype(np.float32), "voiced_flag": voiced_flag,
-        "voiced_prob": voiced_prob.astype(np.float32), "onset_env": onset_env.astype(np.float32),
+        "f0": f0.astype(np.float32),
+        "voiced_flag": voiced_flag,
+        "voiced_prob": voiced_prob.astype(np.float32),
+        "onset_env": onset_env.astype(np.float32),
         "duration": np.float32(len(y) / SR),
     }
 
@@ -60,8 +63,11 @@ def pyin_notes(a: dict[str, np.ndarray], p: dict) -> list[dict]:
     onsets = np.array([], dtype=int)
     if p["onset_delta"] is not None or p["snap_onsets"]:
         onsets = librosa.onset.onset_detect(
-            onset_envelope=a["onset_env"], sr=SR, hop_length=HOP,
-            delta=p["onset_delta"] or 0.1, units="frames",
+            onset_envelope=a["onset_env"],
+            sr=SR,
+            hop_length=HOP,
+            delta=p["onset_delta"] or 0.1,
+            units="frames",
         )
     split_at = set(onsets.tolist()) if p["onset_delta"] is not None else set()
     notes: list[tuple[int, int, int]] = []
@@ -127,13 +133,20 @@ def bp_notes(a: dict[str, np.ndarray], p: dict) -> list[dict]:
 
     output = {k: a[k] for k in ("note", "onset", "contour")}
     _, events = model_output_to_notes(
-        output, onset_thresh=p["onset_thresh"], frame_thresh=p["frame_thresh"],
+        output,
+        onset_thresh=p["onset_thresh"],
+        frame_thresh=p["frame_thresh"],
         min_note_len=int(np.round(p["min_note_ms"] / 1000 * (AUDIO_SAMPLE_RATE / FFT_HOP))),
-        min_freq=FMIN, max_freq=FMAX, include_pitch_bends=False, melodia_trick=True,
+        min_freq=FMIN,
+        max_freq=FMAX,
+        include_pitch_bends=False,
+        melodia_trick=True,
     )
     notes = sorted(
-        ({"start": float(s), "end": float(e), "midi": int(m), "amp": float(amp)}
-         for s, e, m, amp, _ in events),
+        (
+            {"start": float(s), "end": float(e), "midi": int(m), "amp": float(amp)}
+            for s, e, m, amp, _ in events
+        ),
         key=lambda n: (n["start"], -n["amp"]),
     )
     if p["mono"]:
@@ -157,6 +170,7 @@ def monophonic(notes: list[dict]) -> list[dict]:
 
 
 # --- fixture floor ----------------------------------------------------------------------------
+
 
 def fixture_analyse(path: Path) -> dict[str, np.ndarray]:
     import soundfile as sf

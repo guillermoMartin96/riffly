@@ -133,3 +133,17 @@ def test_monophonic_keeps_most_confident_and_truncates():
         DetectedNote(0.40, 0.80, 62, 0.5),
         DetectedNote(1.00, 1.20, 64, None),
     ]
+
+
+def test_app_params_match_benchmark_selection():
+    """The app runs the parameters selected on GuitarSet dev; the gate scores the same file."""
+    import json
+
+    from jamrecall.transcription.basic_pitch_adapter import PARAMS_FILE, BasicPitchParams
+
+    bench = Path(__file__).resolve().parents[2] / "bench" / "results" / "basic-pitch.json"
+    selected = json.loads(bench.read_text())["selected_params"]
+    app = BasicPitchParams.app_default()
+    assert BasicPitchParams() == app  # dataclass defaults agree with the file
+    assert {k: getattr(app, k) for k in selected} == selected
+    assert json.loads(PARAMS_FILE.read_text())["min_freq_hz"] == 75.0

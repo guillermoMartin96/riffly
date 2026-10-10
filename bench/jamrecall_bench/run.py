@@ -69,8 +69,10 @@ def evaluate(method: str, feats: dict, params: dict, corpus: str, split: str):
     result = aggregate(stats)
     result["audio_minutes"] = round(audio_s / 60, 2)
     result["real_time_factor"] = round((analysis_s + conv_s) / audio_s, 4) if audio_s else None
-    result["by_tag"] = {k: aggregate(v)["onset"] | {"n_ref": aggregate(v)["n_ref"]}
-                        for k, v in sorted(by_tag.items())}
+    result["by_tag"] = {
+        k: aggregate(v)["onset"] | {"n_ref": aggregate(v)["n_ref"]}
+        for k, v in sorted(by_tag.items())
+    }
     return result
 
 
@@ -84,31 +86,41 @@ def main() -> None:
     tuning = []
     for p in candidates:
         r = evaluate(method, feats, p, "guitarset", "dev")
-        tuning.append({"params": p, "onset_f1": r["onset"]["f1"],
-                       "onset_offset_f1": r["onset_offset"]["f1"]})
+        tuning.append(
+            {"params": p, "onset_f1": r["onset"]["f1"], "onset_offset_f1": r["onset_offset"]["f1"]}
+        )
     best = max(tuning, key=lambda t: (t["onset_f1"], t["onset_offset_f1"]))["params"]
     print(f"[{method}] selected {best}", flush=True)
     results = {
         "method": method,
         "selected_params": best,
         "selection": "max onset F1 on guitarset/dev",
-        "environment": {"python": platform.python_version(), "machine": platform.machine(),
-                        "platform": platform.platform()},
+        "environment": {
+            "python": platform.python_version(),
+            "machine": platform.machine(),
+            "platform": platform.platform(),
+        },
         "tuning": sorted(tuning, key=lambda t: -t["onset_f1"])[:10],
-        "results": {f"{c}/{s}": evaluate(method, feats, best, c, s)
-                    for c in CORPORA for s in ("dev", "holdout")},
+        "results": {
+            f"{c}/{s}": evaluate(method, feats, best, c, s)
+            for c in CORPORA
+            for s in ("dev", "holdout")
+        },
     }
     if method == "basic-pitch":
         poly = dict(best, mono=False)
         results["results_raw_polyphonic"] = {
-            f"{c}/{s}": evaluate(method, feats, poly, c, s) for c in CORPORA
+            f"{c}/{s}": evaluate(method, feats, poly, c, s)
+            for c in CORPORA
             for s in ("dev", "holdout")
         }
     write_json(RESULTS / f"{method}.json", results)
     for k, v in results["results"].items():
-        print(f"  {k:20s} onset F1 {v['onset']['f1']:.3f}  "
-              f"P {v['onset']['precision']:.3f} R {v['onset']['recall']:.3f}  "
-              f"w/offset F1 {v['onset_offset']['f1']:.3f}  RTF {v['real_time_factor']}")
+        print(
+            f"  {k:20s} onset F1 {v['onset']['f1']:.3f}  "
+            f"P {v['onset']['precision']:.3f} R {v['onset']['recall']:.3f}  "
+            f"w/offset F1 {v['onset_offset']['f1']:.3f}  RTF {v['real_time_factor']}"
+        )
 
 
 if __name__ == "__main__":

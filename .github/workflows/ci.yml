@@ -21,6 +21,9 @@ jobs:
       - run: .venv/bin/ruff format --check .
       - name: Lint benchmark code
         run: .venv/bin/ruff check ../bench
+      - name: Validation-gate integrity tests (bench/tests)
+        working-directory: bench
+        run: ../backend/.venv/bin/python -m pytest -v -p no:cacheprovider tests
       - name: Basic Pitch inference smoke tests (browser formats, onset alignment, bench parity)
         run: .venv/bin/pytest -v tests/test_basic_pitch.py
       - name: Full backend test suite

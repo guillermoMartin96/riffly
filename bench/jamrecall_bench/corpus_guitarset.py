@@ -53,11 +53,15 @@ def load_notes(jams_path: str) -> list[dict]:
             continue
         string_idx = a["annotation_metadata"]["data_source"]  # 0 = low E
         for d in a["data"]:
-            notes.append({
-                "start": float(d["time"]), "end": float(d["time"] + d["duration"]),
-                "midi_float": float(d["value"]), "midi": int(round(d["value"])),
-                "string_low_e_0": int(string_idx),
-            })
+            notes.append(
+                {
+                    "start": float(d["time"]),
+                    "end": float(d["time"] + d["duration"]),
+                    "midi_float": float(d["value"]),
+                    "midi": int(round(d["value"])),
+                    "string_low_e_0": int(string_idx),
+                }
+            )
     notes.sort(key=lambda n: (n["start"], n["midi"]))
     return notes
 
@@ -129,30 +133,50 @@ def main() -> None:
             lo, hi, run = cropped
             seg = audio[int(lo * sr) : int(hi * sr)]
             seg_dur = len(seg) / sr  # sample-rounded; clamp ends to it
-            ref = [{"start": round(n["start"] - lo, 6),
-                    "end": round(min(n["end"] - lo, seg_dur), 6), "midi": n["midi"]}
-                   for n in run if n["end"] > n["start"]]
+            ref = [
+                {
+                    "start": round(n["start"] - lo, 6),
+                    "end": round(min(n["end"] - lo, seg_dur), 6),
+                    "midi": n["midi"],
+                }
+                for n in run
+                if n["end"] > n["start"]
+            ]
             cid = f"{stem}_seg{k:02d}"
             path = CORPUS / "guitarset" / split / f"{cid}.wav"
             path.parent.mkdir(parents=True, exist_ok=True)
             sf.write(path, seg, sr, subtype="PCM_16")
-            clips.append({
-                "id": cid, "split": split, "audio": str(path.relative_to(CORPUS)),
-                "duration": round(len(seg) / sr, 6), "notes": ref,
-                "tags": {"player": player, "style": stem.split("_")[1].split("-")[0][:-1],
-                         "source": stem, "offset_in_source": round(lo, 6)},
-            })
-    write_json(CORPUS / "guitarset" / "manifest.json", {
-        "corpus": "guitarset",
-        "description": "GuitarSet v1.1.0 solo excerpts, mic audio, monophonic segments "
-                       "(CC BY 4.0, doi:10.5281/zenodo.3371780).",
-        "clips": clips,
-    })
+            clips.append(
+                {
+                    "id": cid,
+                    "split": split,
+                    "audio": str(path.relative_to(CORPUS)),
+                    "duration": round(len(seg) / sr, 6),
+                    "notes": ref,
+                    "tags": {
+                        "player": player,
+                        "style": stem.split("_")[1].split("-")[0][:-1],
+                        "source": stem,
+                        "offset_in_source": round(lo, 6),
+                    },
+                }
+            )
+    write_json(
+        CORPUS / "guitarset" / "manifest.json",
+        {
+            "corpus": "guitarset",
+            "description": "GuitarSet v1.1.0 solo excerpts, mic audio, monophonic segments "
+            "(CC BY 4.0, doi:10.5281/zenodo.3371780).",
+            "clips": clips,
+        },
+    )
     for split in ("dev", "holdout"):
         cs = [c for c in clips if c["split"] == split]
-        print(f"guitarset {split}: {len(cs)} segments, "
-              f"{sum(c['duration'] for c in cs) / 60:.1f} min, "
-              f"{sum(len(c['notes']) for c in cs)} notes")
+        print(
+            f"guitarset {split}: {len(cs)} segments, "
+            f"{sum(c['duration'] for c in cs) / 60:.1f} min, "
+            f"{sum(len(c['notes']) for c in cs)} notes"
+        )
     print(f"skipped {skipped} runs with < {MIN_NOTES} notes after excluding neighbouring sound")
 
 

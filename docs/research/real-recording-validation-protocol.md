@@ -32,10 +32,16 @@ session id **and sha256**, and scoring refuses audio whose hash differs.
 One JSON file per recording in `bench/real/references/<name>.json`:
 
 ```json
-{"session_id": "…", "audio_sha256": "…", "split": "dev|holdout", "condition": "A|B|C|D",
- "method": "manual|score", "annotator": "…", "instrument": "…", "notes_text": "…",
+{"format": "jamrecall-reference-v1", "session_id": "…", "audio_sha256": "…",
+ "status": "final", "seed": "blank", "revision": 1,
+ "split": "dev|holdout", "condition": "A|B|C|D", "method": "manual|score",
+ "annotator": "…", "instrument": "…", "notes_text": "…",
  "notes": [{"start": 0.512, "end": 0.903, "midi": 64, "technique": null}]}
 ```
+`status` (must be `final`) and `seed` (`blank` or `transcription:<id>:<engine>@<version>`) are
+**required**; nothing is inferred. Each recording (session id and audio hash) may appear only once
+across all references. Notes must lie within the recording. `prepare` writes no manifest if any
+reference fails these checks.
 
 References are made in JamRecall's **Reference annotation** panel (or as JSON in the same format) and
 exported with `python -m jamrecall.manage export-references --out bench/real/references`. Only
@@ -67,7 +73,13 @@ tag (pitch = the note at its onset). They are included in the main score and als
   `bench/results/basic-pitch.json`) and the pYIN baseline (`bench/results/pyin.json`).
   Audio is decoded with the app's own decoder (`jamrecall.audio.decode_mono`, 22,050 Hz mono).
 - **No tuning on holdout.** Parameters may be re-tuned only on the real **dev** split
-  (`real.py score --tune-on-dev`). Tuned parameters are recorded, then frozen before the holdout is scored.
+  (`real.py score --tune-on-dev`). The gate only passes for the parameters the app actually runs
+  (`backend/jamrecall/transcription/basic_pitch_params.json`). A result tuned on dev therefore reports
+  INCOMPLETE until the new parameters are approved, integrated into the app, and the untuned app
+  configuration is re-scored.
+- **Bound evidence**: the manifest carries a content fingerprint. Both engines' results must have been
+  scored on exactly that manifest (same fingerprint and recording ids), with a holdout summary for every
+  gating condition; otherwise the gate reports INCOMPLETE.
 
 ## Pass criteria
 Gate (approved by the tech lead, 2026-10-09), on the **holdout** recordings of conditions A+B+C combined:
