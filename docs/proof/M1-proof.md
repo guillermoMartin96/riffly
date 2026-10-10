@@ -10,7 +10,7 @@
 - [x] String/fret ambiguity and unsupported-technique disclosure — shown on real-engine output (`02-transcribed.png`): inferred-fingering label, underlined ambiguous frets, techniques-not-modelled notice, provisional-engine warning
 - [x] Riff interval boundaries, looping, persistence, deletion semantics — E2E with the real engine: invalid ranges rejected, exact [0.5, 1.75) persisted across reload, play stops at end (1.70–1.85 s), loop wraps, delete keeps audio and transcription history
 - [ ] Security/privacy review and upload/retention description — retention described (`README.md`, DR-0003 proposed); licensing inventory and obligations in DR-0002 (open, non-blocking); formal review pending
-- [ ] Independent review findings resolved or explicitly accepted — PR and Codex review not started
+- [ ] Independent review findings resolved or explicitly accepted — interim Codex review: 10/10 findings fixed and re-verified by Codex (`docs/reviews/2026-10-09-codex-interim.md`); final review after the real-guitar gate still to do
 
 Record actual commands, outputs, environment, timestamps, and links to evidence. Never precheck without running.
 
@@ -81,3 +81,9 @@ Timing finding: for Chrome MediaRecorder WebM the browser `duration` (4.977 s) i
 shorter than the decoded length (5.037 s). The first packet pts is 0 and the Opus pre-skip is 0, so the
 start is aligned and notes and riffs match playback (assumption 13).
 Screenshot: `frontend/test-results/evidence/20-annotation.png`.
+
+### 2026-10-09 — interim Codex review fixes
+Codex (read-only) found 10 issues (2 blocking). All were fixed and verified over two Codex verification rounds.
+Every new regression test was confirmed to fail on the pre-fix code. CI run 38016950913 on 5761da8 (ubuntu-24.04):
+backend 66 (11 inference + 55), bench gate-integrity 16, frontend 43, Playwright 8 (incl. playback range tests) —
+all passed.

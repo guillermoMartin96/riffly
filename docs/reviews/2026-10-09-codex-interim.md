@@ -30,3 +30,12 @@ Retest (macOS): backend 66 passed; bench gate tests 16 passed. Each new test was
 (4 bench tests; the riff clamping test reproduced `CHECK constraint failed`).
 Caveat noted by Codex: the background-tab test simulates suspended animation frames, not real browser timer throttling.
 Tech-lead disposition:
+
+## Verification round 2 (Codex, read-only, on 5761da8)
+Findings 1, 8, 9, 10: **all verified fixed** against the round-1 reproductions; no new blocking or major problems.
+CI run 38016950913 (ubuntu-24.04) on 5761da8: backend 11 + 55, bench gate 16, frontend 43, Playwright 8 — all passed.
+
+**Status: all 10 interim findings resolved and independently verified.** Open item outside the review's scope:
+real-guitar validation (waiting for the tech lead's recordings).
+
+Tech-lead disposition:
