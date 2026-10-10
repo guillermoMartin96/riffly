@@ -1,8 +1,9 @@
 # Real-recording validation protocol (DR-0001 decision 2)
 
 Status: **defined before any recording was evaluated** (2026-10-09). Thresholds approved provisionally
-by the tech lead on 2026-10-09. Changing criteria, tolerances or splits after scoring the holdout requires
-a new decision request.
+and DR-0004 (reference seeding) approved by the tech lead on 2026-10-09. **Changing thresholds, tolerances,
+dataset minimums or splits requires a new decision request.** Step-by-step collection instructions:
+`docs/testing/manual-testing-guide.md` §7.
 
 ## Purpose
 Basic Pitch's GuitarSet scores are inflated by training-data overlap, so the transcription engine stays
@@ -20,8 +21,11 @@ public dataset, including Basic Pitch's training data. No dataset audio may be u
 | C. Clean electric guitar | amp or DI, clean tone, single-note lines | yes | 2 / 3 recordings, ≥ 60 holdout notes |
 | D. Distorted electric guitar | overdrive/distortion, single-note lines | **exploratory, not an M1 blocker** | 1 / 2 recordings |
 
-Each recording is 10–60 s and played monophonically (single notes; chords are out of scope). Before
-any scoring, recordings are assigned to dev or holdout in the reference file and never move afterwards.
+Each recording is 10–60 s and played monophonically (single notes; chords are out of scope).
+Each is an independent performance in its own JamRecall session. The same session or audio may not
+appear twice anywhere in the dataset, and exploratory takes are not reused. The split of every take is
+decided **before it is played**, recorded in its reference, locked at finalization, and never changed.
+Minimum for the gating conditions: **15 takes** (A, B, C × 2 dev + 3 holdout).
 
 Capture: JamRecall in desktop Chrome (record the browser version, OS, microphone/interface, guitar,
 amp/tone, and room), with default app settings. The app disables echo cancellation, noise
@@ -45,10 +49,32 @@ reference fails these checks.
 
 References are made in JamRecall's **Reference annotation** panel (or as JSON in the same format) and
 exported with `python -m jamrecall.manage export-references --out bench/real/references`. Only
-**finalized** annotations are exported or scored. **Holdout** references must not be derived from either
-engine's output: start them blank. Dev and exploratory references may be started from model output.
-The seed is recorded, and the scorer excludes model-seeded holdout references (DR-0004 asks the tech lead
-to confirm this rule).
+**finalized** annotations are exported or scored.
+
+### Independence of holdout references (DR-0004, approved 2026-10-09)
+- **Holdout** references start **blank**, and the annotator has **no exposure to model-generated notes**
+  for that take before finalizing: the take is not transcribed (no **Transcribe**, no viewing of its
+  transcriptions or export) until its reference is finalized.
+- **Dev** and exploratory references may be started from model output (`seed` =
+  `transcription:<id>:<engine>@<version>`).
+- Enforcement:
+  - The seed is stored with every annotation, and the UI warns when a holdout reference is
+    model-seeded.
+  - `prepare` requires an explicit seed; `score` and `gate` exclude model-seeded holdout references
+    from scoring and from the minimum counts.
+  - **Not detectable today**: a holdout take that was transcribed and viewed *before* blank annotation.
+    That relies on the procedure above. Such a take must not be finalized as holdout; it is deleted or
+    used as dev, and a replacement holdout take is recorded.
+- **Finalization**: requires split, condition and annotator, plus at least one note, and locks the
+  split permanently.
+- **Changes after finalization**: **Reopen** keeps the split locked and increments the revision. Both
+  are in the dataset fingerprint, so earlier scores become stale (gate INCOMPLETE until re-scored).
+  - Before any holdout scoring, a correction is allowed if the annotator has not seen model output
+    for the take; the reason goes in the Notes field.
+  - After holdout scoring has started, holdout references are frozen. A correction needs a new
+    decision request recording the reason and the before/after scores.
+  - A holdout reference reopened after its take was transcribed is contaminated: it is excluded
+    (delete the take) and replaced.
 - **manual**: annotate each played note on the original audio with the in-app editor (zoom the timeline,
   set the playhead, listen to single notes, nudge in 10 ms steps); external tools such as Sonic
   Visualiser are also fine. Onset = start of the attack transient; pitch = fretted note
@@ -69,17 +95,23 @@ tag (pitch = the note at its onset). They are included in the main score and als
   - pitch correctness: exact-pitch rate and octave-error rate among onset-matched notes;
   - note-end quality: offset-aware F1 and median absolute end error;
   - latency: inference time and real-time factor per recording, plus end-to-end UI latency (E2E).
-- Engines: the app's Basic Pitch configuration (`BasicPitchAdapter`, parameters frozen as in
-  `bench/results/basic-pitch.json`) and the pYIN baseline (`bench/results/pyin.json`).
+- Engines: the app's Basic Pitch configuration (`BasicPitchAdapter`, parameters from
+  `backend/jamrecall/transcription/basic_pitch_params.json`, which equals the GuitarSet-dev selection in
+  `bench/results/basic-pitch.json`), and the pYIN baseline (`bench/results/pyin.json`).
   Audio is decoded with the app's own decoder (`jamrecall.audio.decode_mono`, 22,050 Hz mono).
 - **No tuning on holdout.** Parameters may be re-tuned only on the real **dev** split
   (`real.py score --tune-on-dev`). The gate only passes for the parameters the app actually runs
   (`backend/jamrecall/transcription/basic_pitch_params.json`). A result tuned on dev therefore reports
   INCOMPLETE until the new parameters are approved, integrated into the app, and the untuned app
   configuration is re-scored.
-- **Bound evidence**: the manifest carries a content fingerprint. Both engines' results must have been
-  scored on exactly that manifest (same fingerprint and recording ids), with a holdout summary for every
-  gating condition; otherwise the gate reports INCOMPLETE.
+- **Dataset fingerprint**: `prepare` writes a manifest with a SHA-256 fingerprint covering every
+  recording's id, split, condition, seed, revision, reference notes, original-audio hash, analysis-audio
+  path and analysis-audio hash.
+  - `score` refuses analysis audio that changed after `prepare`, and records the fingerprint and the
+    recording ids it scored.
+  - The gate reports INCOMPLETE unless both engines' results carry exactly the current fingerprint and
+    ids, include a holdout summary for every gating condition, and Basic Pitch was scored with the
+    app's full parameter set (untuned).
 
 ## Pass criteria
 Gate (approved by the tech lead, 2026-10-09), on the **holdout** recordings of conditions A+B+C combined:
@@ -88,9 +120,15 @@ Gate (approved by the tech lead, 2026-10-09), on the **holdout** recordings of c
 3. for **each** gating condition A, B, C (provisionally approved 2026-10-09): Basic Pitch holdout onset
    F1 ≥ 0.70 **and** ≥ 90% of onset-matched notes have the correct MIDI pitch.
 
+Verdicts (`bench/results/real-gate.json`, exit code 0/1/2):
+- **PASS**: all checks 1–3 hold, with complete and untampered evidence.
+- **FAIL**: the evidence is complete, but at least one check fails. A failing gating condition is
+  listed in `poor_conditions`.
+- **INCOMPLETE**: any gating condition is below its minimum recording or note count, a summary is
+  missing, or the evidence is stale or mismatched (`integrity_problems`). No conclusion is drawn.
+
 Reported separately for every recording, condition and aggregate: precision, recall, pitch accuracy,
-and note-end accuracy (offset-aware F1 and median end error). The gate is INCOMPLETE while any gating
-condition is below its minimum recording or note count.
+and note-end accuracy (offset-aware F1 and median end error).
 Condition D is reported but never gates M1.
 
 If the gate fails or a gating condition performs poorly: **stop**, raise a decision request with the

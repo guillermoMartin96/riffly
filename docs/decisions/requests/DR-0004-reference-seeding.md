@@ -1,5 +1,5 @@
 # DR-0004 — May reference annotations be seeded from model output?
-Status: Proposed — confirmation needed (affects the validity of the real-guitar gate)
+Status: **Approved** — Option A (tech lead, 2026-10-09)
 Owner: Claude Code (implementation engineer)
 Date: 2026-10-09
 
@@ -35,3 +35,15 @@ Fully reversible: provenance is stored, so references can be re-scored under ano
 Confirm Option A, or choose B/C.
 
 ## Decision and date (leave blank pending approval)
+2026-10-09, tech lead: **Option A approved.** Holdout reference annotations must start blank, without
+exposure to model-generated notes. Development and exploratory annotations may be initialised from
+model predictions. Preserve the independence of holdout evaluation. Document how references are
+finalized, how contamination is prevented, and how changes to finalized holdout references are handled.
+
+Documented in `docs/research/real-recording-validation-protocol.md` ("Independence of holdout
+references") and `docs/testing/manual-testing-guide.md` §7.3–7.5.
+
+Known gap: viewing a holdout take's model output *before* blank annotation (clicking Transcribe first)
+is prevented by procedure only; the app cannot detect it. A small guard is proposed for approval: record
+whether the session had a transcription before the annotation was finalized, export it, and have the
+gate exclude such holdout references. Not implemented.

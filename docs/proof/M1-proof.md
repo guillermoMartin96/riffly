@@ -87,3 +87,17 @@ Codex (read-only) found 10 issues (2 blocking). All were fixed and verified over
 Every new regression test was confirmed to fail on the pre-fix code. CI run 38016950913 on 5761da8 (ubuntu-24.04):
 backend 66 (11 inference + 55), bench gate-integrity 16, frontend 43, Playwright 8 (incl. playback range tests) —
 all passed.
+
+### 2026-10-09 — DR-0004 and review sign-off; dataset instructions
+- DR-0004 approved; the protocol and guide document finalization, contamination prevention and changes
+  to finalized holdout references. Decision register: `docs/decisions/README.md`.
+- Review signed off (`docs/reviews/2026-10-09-codex-interim.md`). Last code commit verified by CI:
+  `5761da8` (run 38016950913). The commits after it change documentation only; scripts/check_docs.py
+  and its CI step come later.
+- `backend/.venv/bin/python scripts/check_docs.py` → "Documentation consistent". Negative tests:
+  - an altered threshold in the protocol and an altered minimum in the guide were both reported;
+  - a missing path and a broken link were both reported;
+  - a stale register status was reported;
+  - all files were restored afterwards.
+- Manual items pending (tech lead): §6 checklist incl. the real-Chrome background-tab check; real-guitar
+  validation takes (§7).

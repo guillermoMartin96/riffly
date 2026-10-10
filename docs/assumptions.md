@@ -17,5 +17,5 @@ Assumptions made during M1 that a reviewer may want to challenge. Each one says 
 | 11 | Licensing is acceptable for local development | DR-0002 (non-blocking) | Any distribution or public deployment |
 | 12 | `typing_extensions` 4.16.0 (vs 4.15.0 in the bench lock) does not change Basic Pitch output | Parity test: identical notes to the benchmark pipeline | Parity test fails |
 | 13 | The browser's `duration` for Chrome MediaRecorder WebM can be up to one Opus frame (60 ms) shorter than the server-decoded length; the start is aligned | Measured 2026-10-09: first packet pts 0, Opus pre-skip 0, last 60 ms packet at 4.977 s, decoded to 5.037 s | A take shows a start offset between playback and notes |
-| 14 | Holdout references seeded from model output are not independent evidence | Protocol; DR-0004 (confirmation pending) | Tech lead chooses DR-0004 option B |
+| 14 | Holdout references are independent of model output: blank seed (enforced) and no viewing of the take's transcription before finalizing (procedural) | DR-0004 approved 2026-10-09; seed checked by the gate | A holdout take is transcribed before its reference is finalized |
 | 15 | Port 8700 (API) and 5173 (app) are free on the tech lead's Mac; port 8000 is used by another local FastAPI app | Checked 2026-10-09; `scripts/dev.sh` refuses busy ports | – |

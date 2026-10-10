@@ -38,4 +38,21 @@ CI run 38016950913 (ubuntu-24.04) on 5761da8: backend 11 + 55, bench gate 16, fr
 **Status: all 10 interim findings resolved and independently verified.** Open item outside the review's scope:
 real-guitar validation (waiting for the tech lead's recordings).
 
-Tech-lead disposition:
+## Tech-lead disposition (2026-10-09)
+**Approved.** Closure of all 10 findings accepted after Codex's two independent verification rounds.
+
+Commit status:
+| Commit | Kind | CI |
+|---|---|---|
+| `5761da8` | **last code commit**: all code fixes for findings 1–10 | **verified**: run 38016950913, all jobs passed |
+| `9fb22d1` | documentation only (`docs/proof`, `docs/reviews`) | no code change since 5761da8 |
+| `b23487f` | documentation only (`docs/reviews`) | no code change since 5761da8 |
+| later sign-off and documentation commits | documentation only (`docs/`, plus `scripts/check_docs.py` and its CI step) | see `docs/proof/M1-proof.md` |
+
+`git diff --name-only 5761da8..b23487f` lists only files under `docs/`.
+
+Manual verification item (from finding 5): CI simulates suspended animation frames but cannot
+reproduce real browser timer throttling in a background tab or minimised window. This is checked by
+hand in real Chrome: `docs/testing/manual-testing-guide.md` §6, "Background-tab check".
+**Status: pending the tech lead's run.**
+

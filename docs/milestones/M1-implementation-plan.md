@@ -111,8 +111,13 @@ get null string/fret.
   adjust timing), export (zip + protocol JSON), and session deletion, so the tech lead can produce trustworthy
   references. Editing notes as a product feature is still an M1 non-goal; annotations never modify model output.
 - Manual testing: `docs/testing/manual-testing-guide.md`; launcher `scripts/dev.sh`.
-- **Remaining M1 gate**: real-recording validation (protocol + tooling + annotation UI ready; waiting for recordings).
-  Interim Codex review on a draft PR.
+- Interim Codex review (draft PR #1): 10 findings fixed, verified by Codex in two rounds, signed off by the tech
+  lead 2026-10-09. DR-0004 approved (holdout references blank, no exposure to model notes).
+- **Remaining M1 gates**:
+  1. real-guitar validation: ≥ 15 independent takes for A–C, per `docs/testing/manual-testing-guide.md` §7;
+     waiting for recordings;
+  2. the manual checklist (incl. the real-Chrome background-tab check), `docs/testing/manual-testing-guide.md` §6;
+  3. final independent review, then the tech lead's merge decision.
 
 ## Risks
 
