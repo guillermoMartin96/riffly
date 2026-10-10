@@ -1,0 +1,21 @@
+# runtime data (recordings, sqlite)
+var/
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+# node
+node_modules/
+frontend/dist/
+frontend/test-results/
+frontend/playwright-report/
+# benchmark caches (downloaded datasets, generated audio)
+bench/.cache/
+bench/.venv*/
+bench/.cache/
+.DS_Store
+frontend/e2e/.generated/
+*.tsbuildinfo
