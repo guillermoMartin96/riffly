@@ -16,6 +16,7 @@ Findings (severity, file/line, reproduction):
 10. MINOR real.py — "excluding technique notes" metric keeps the matching estimates (false positives). **Fixed**: estimates matched to tagged notes are removed too (test)
 Fixes and retest evidence (macOS, 2026-10-09): backend 65 passed; bench gate tests 12 passed; vitest 43 passed; Playwright 8 passed (incl. 2 new playback tests verified to fail on the pre-fix code). Follow-up Codex verification: see below.
 Remaining risks: all 10 findings addressed; real-guitar validation still pending recordings
+
 ## Verification round 1 (Codex, read-only, on commits 6f1a5f3 + cf0ae07)
 Verdict: 6 verified fixed (2, 3, 4, 5, 6, 7); 4 partially fixed, each with a reproduction; no new blocking/major issues.
 - 1 partial: the fingerprint omitted the analysed audio file. **Fixed**: manifest records each analysis WAV's sha256;
@@ -29,7 +30,6 @@ Verdict: 6 verified fixed (2, 3, 4, 5, 6, 7); 4 partially fixed, each with a rep
 Retest (macOS): backend 66 passed; bench gate tests 16 passed. Each new test was confirmed to fail on the previous code
 (4 bench tests; the riff clamping test reproduced `CHECK constraint failed`).
 Caveat noted by Codex: the background-tab test simulates suspended animation frames, not real browser timer throttling.
-Tech-lead disposition:
 
 ## Verification round 2 (Codex, read-only, on 5761da8)
 Findings 1, 8, 9, 10: **all verified fixed** against the round-1 reproductions; no new blocking or major problems.
