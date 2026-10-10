@@ -381,20 +381,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             s = require_session(conn, session_id)
             if not (math.isfinite(start) and math.isfinite(end)):
                 raise ApiError(422, "invalid_range", "Start and end must be finite numbers")
-            start, end = round(start, 6), round(end, 6)  # validate what is stored
+            start, end = round(start, 6), round(end, 6)
+            if end > s["duration_seconds"] + 1e-6:
+                raise ApiError(422, "invalid_range", "End is beyond the end of the recording")
+            end = round(min(end, s["duration_seconds"]), 6)  # clamp, then validate what is stored
             if start < 0:
                 raise ApiError(422, "invalid_range", "Start must be >= 0")
             if end <= start:
                 raise ApiError(422, "invalid_range", "End must be after start")
-            if end > s["duration_seconds"] + 1e-6:
-                raise ApiError(422, "invalid_range", "End is beyond the end of the recording")
-            return store.insert_riff(
-                conn,
-                session_id,
-                body.title,
-                round(start, 6),
-                round(min(end, s["duration_seconds"]), 6),
-            )
+            return store.insert_riff(conn, session_id, body.title, start, end)
 
     @app.get("/api/sessions/{session_id}/riffs")
     def session_riffs(session_id: str) -> list[dict[str, Any]]:

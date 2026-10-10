@@ -36,12 +36,13 @@ def validate_notes(notes: list[dict[str, Any]], duration: float) -> list[dict[st
             raise AnnotationError(422, "invalid_note", f"Note {i + 1}: times must be numbers")
         # Validate the values that will be stored (4-decimal rounding).
         start, end = round(float(start), 4), round(float(end), 4)
-        if start < 0 or end <= start:
-            raise AnnotationError(422, "invalid_note", f"Note {i + 1}: end must be after start ≥ 0")
         if end > duration + 1e-6:
             raise AnnotationError(
                 422, "invalid_note", f"Note {i + 1}: ends after the recording ({duration:.3f} s)"
             )
+        end = round(min(end, duration), 4)  # clamp first, then check what is stored
+        if start < 0 or end <= start:
+            raise AnnotationError(422, "invalid_note", f"Note {i + 1}: end must be after start ≥ 0")
         if not 0 <= midi <= 127:
             raise AnnotationError(422, "invalid_note", f"Note {i + 1}: MIDI pitch must be 0-127")
         tech = n.get("technique") or None
@@ -49,8 +50,8 @@ def validate_notes(notes: list[dict[str, Any]], duration: float) -> list[dict[st
             raise AnnotationError(422, "invalid_note", f"Note {i + 1}: unknown technique '{tech}'")
         out.append(
             {
-                "start_seconds": round(float(start), 4),
-                "end_seconds": round(min(float(end), duration), 4),
+                "start_seconds": start,
+                "end_seconds": end,
                 "midi_pitch": int(midi),
                 "technique": tech,
             }

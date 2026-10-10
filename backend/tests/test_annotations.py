@@ -209,3 +209,15 @@ def test_rounding_cannot_produce_zero_length_note(fixture_client, sid):
         json={"title": "x", "start_seconds": 0.1000001, "end_seconds": 0.1000002},
     )
     assert r.status_code == 422
+
+
+def test_clamping_to_duration_cannot_produce_zero_length(fixture_client, sid):
+    # Codex follow-up: end within 1e-6 past the duration is clamped; must not collapse to zero.
+    s = fixture_client.get(f"/api/sessions/{sid}").json()
+    d = s["duration_seconds"]
+    r = fixture_client.post(
+        f"/api/sessions/{sid}/riffs",
+        json={"title": "x", "start_seconds": d, "end_seconds": d + 0.0000009},
+    )
+    assert r.status_code == 422
+    assert put(fixture_client, sid, [n(round(d, 4), d + 0.0000009, 60)]).status_code == 422

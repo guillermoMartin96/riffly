@@ -110,10 +110,21 @@ def check_duplicates(refs: list[tuple[str, dict]]) -> list[str]:
     return errs
 
 
+def file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def fingerprint(clips: list[dict]) -> str:
     """Content hash of everything that determines a score (ids, splits, refs, audio)."""
     canon = [
-        {"id": c["id"], "split": c["split"], "notes": c["notes"], "tags": c["tags"]}
+        {
+            "id": c["id"],
+            "split": c["split"],
+            "notes": c["notes"],
+            "tags": c["tags"],
+            "audio": c["audio"],
+            "wav_sha256": c.get("wav_sha256"),
+        }
         for c in sorted(clips, key=lambda c: c["id"])
     ]
     return hashlib.sha256(json.dumps(canon, sort_keys=True).encode()).hexdigest()
@@ -169,6 +180,7 @@ def prepare(args) -> int:
                 "id": name,
                 "split": ref["split"],
                 "audio": str(out.relative_to(CORPUS)),
+                "wav_sha256": file_sha256(out),
                 "duration": round(buf.duration_seconds, 6),
                 "notes": [
                     {
@@ -218,16 +230,32 @@ def counts(clips: list[dict]) -> dict:
 
 
 def without_technique_notes(ref: list[dict], est: list[dict]) -> tuple[list[dict], list[dict]]:
-    """Drop technique-tagged reference notes *and* the estimates matched to them (nearest onset
-    within the onset tolerance), so detected technique notes are not counted as false positives."""
-    tagged = [n for n in ref if n.get("technique")]
-    plain = [n for n in ref if not n.get("technique")]
-    remaining = list(est)
-    for t in tagged:
-        near = [e for e in remaining if abs(e["start"] - t["start"]) <= ONSET_TOL]
-        if near:
-            remaining.remove(min(near, key=lambda e: abs(e["start"] - t["start"])))
-    return plain, remaining
+    """Drop technique-tagged reference notes *and* the estimates the scorer matches to them.
+
+    Uses the same optimal onset+pitch matching as the main score (mir_eval), so an estimate that
+    matches a plain note is never removed, and detected technique notes are not counted as false
+    positives against the remaining plain notes.
+    """
+    import mir_eval
+    import numpy as np
+
+    tagged_idx = {i for i, n in enumerate(ref) if n.get("technique")}
+    plain = [n for i, n in enumerate(ref) if i not in tagged_idx]
+    if not tagged_idx or not est:
+        return plain, list(est)
+
+    def arrays(notes: list[dict]):
+        iv = np.array([[n["start"], n["end"]] for n in notes], dtype=float)
+        hz = mir_eval.util.midi_to_hz(np.array([n["midi"] for n in notes], dtype=float))
+        return iv, hz
+
+    r_iv, r_hz = arrays(ref)
+    e_iv, e_hz = arrays(est)
+    pairs = mir_eval.transcription.match_notes(
+        r_iv, r_hz, e_iv, e_hz, onset_tolerance=ONSET_TOL, pitch_tolerance=50.0, offset_ratio=None
+    )
+    drop = {j for i, j in pairs if i in tagged_idx}
+    return plain, [e for j, e in enumerate(est) if j not in drop]
 
 
 def score(args) -> int:
@@ -251,7 +279,11 @@ def score(args) -> int:
     feats, timing = {}, {}
     for c in clips:
         t0 = time.perf_counter()
-        feats[c["id"]] = analyse(CORPUS / c["audio"])
+        wav = CORPUS / c["audio"]
+        if file_sha256(wav) != c.get("wav_sha256"):
+            print(f"{c['id']}: analysis audio differs from the manifest; run prepare again")
+            return 1
+        feats[c["id"]] = analyse(wav)
         timing[c["id"]] = time.perf_counter() - t0
     tuned = None
     if args.tune_on_dev and spec:
@@ -297,6 +329,7 @@ def score(args) -> int:
     out = {
         "method": args.method,
         "params": params,
+        "app_params": app_bp_params() if args.method == "basic-pitch" else None,
         "tuned_on_real_dev": tuned,
         "manifest_fingerprint": manifest["fingerprint"],
         "scored_clip_ids": sorted(c["id"] for c in clips),
@@ -335,7 +368,9 @@ def evaluate_gate(manifest: dict, bp: dict, py: dict, app_params: dict) -> dict:
             "basic-pitch was re-tuned on dev; the app does not run those parameters "
             "(integrate them through a decision request, then re-score untuned)"
         )
-    if bp.get("params") != {k: app_params[k] for k in BENCH_BP_KEYS}:
+    if bp.get("app_params") != app_params or bp.get("params") != {
+        k: app_params[k] for k in BENCH_BP_KEYS
+    }:
         problems.append("basic-pitch was scored with parameters other than the app's")
 
     c = counts(clips)

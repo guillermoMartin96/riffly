@@ -16,4 +16,17 @@ Findings (severity, file/line, reproduction):
 10. MINOR real.py — "excluding technique notes" metric keeps the matching estimates (false positives). **Fixed**: estimates matched to tagged notes are removed too (test)
 Fixes and retest evidence (macOS, 2026-10-09): backend 65 passed; bench gate tests 12 passed; vitest 43 passed; Playwright 8 passed (incl. 2 new playback tests verified to fail on the pre-fix code). Follow-up Codex verification: see below.
 Remaining risks: all 10 findings addressed; real-guitar validation still pending recordings
+## Verification round 1 (Codex, read-only, on commits 6f1a5f3 + cf0ae07)
+Verdict: 6 verified fixed (2, 3, 4, 5, 6, 7); 4 partially fixed, each with a reproduction; no new blocking/major issues.
+- 1 partial: the fingerprint omitted the analysed audio file. **Fixed**: manifest records each analysis WAV's sha256;
+  the fingerprint covers the path and hash; `score` refuses audio that changed after `prepare`.
+- 8 partial: frequency bounds were not compared. **Fixed**: results record the full app parameter set; the gate compares
+  all of it to `basic_pitch_params.json`.
+- 9 partial: the riff end was clamped after validation (start 1.0, end 1.000001 on a 1.0 s take → DB error).
+  **Fixed**: clamp, then validate the stored values (riffs and annotations).
+- 10 partial: greedy onset-only removal ignored pitch. **Fixed**: uses the scorer's own optimal onset+pitch matching
+  (mir_eval); only estimates matched to tagged notes are dropped.
+Retest (macOS): backend 66 passed; bench gate tests 16 passed. Each new test was confirmed to fail on the previous code
+(4 bench tests; the riff clamping test reproduced `CHECK constraint failed`).
+Caveat noted by Codex: the background-tab test simulates suspended animation frames, not real browser timer throttling.
 Tech-lead disposition:

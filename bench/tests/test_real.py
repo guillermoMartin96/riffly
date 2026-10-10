@@ -71,6 +71,7 @@ def clip(cid, split, cond, seed="blank", n=20):
         "id": cid,
         "split": split,
         "audio": f"x/{cid}.wav",
+        "wav_sha256": cid,
         "duration": n * 0.5,
         "notes": notes,
         "tags": {
@@ -109,6 +110,7 @@ def results(manifest, f1=0.9, per_cond=None, params=BP_PARAMS, tuned=None):
     summary["holdout/A+B+C"] = summary_entry(f1)
     return {
         "params": params,
+        "app_params": APP if params == BP_PARAMS else None,  # what score() records for basic-pitch
         "tuned_on_real_dev": tuned,
         "manifest_fingerprint": manifest["fingerprint"],
         "scored_clip_ids": sorted(c["id"] for c in manifest["clips"]),
@@ -250,3 +252,47 @@ def test_prepare_refuses_notes_beyond_the_recording(tmp_path, data_dir, monkeypa
     write_refs(tmp_path / "refs", {"late": late})
     args = Namespace(tag="t", data_dir=str(d), refs=str(tmp_path / "refs"))
     assert real.prepare(args) == 1
+
+
+def test_technique_exclusion_respects_pitch_and_plain_matches():
+    # Codex follow-up case: the only estimate matches the plain note, not the tagged one.
+    ref_notes = [
+        {"start": 0.10, "end": 0.12, "midi": 60},
+        {"start": 0.13, "end": 0.3, "midi": 62, "technique": "bend"},
+    ]
+    est = [{"start": 0.13, "end": 0.3, "midi": 60}]
+    plain_ref, plain_est = real.without_technique_notes(ref_notes, est)
+    assert plain_est == est
+    assert aggregate([clip_stats(plain_ref, plain_est)])["onset"]["f1"] == 1.0
+
+
+def test_gate_refuses_changed_analysis_audio():
+    m = full_manifest()
+    bp, py = results(m, 0.9), results(m, 0.8, params={})
+    m2 = copy.deepcopy(m)
+    m2["clips"][0]["wav_sha256"] = "changed"
+    m2["fingerprint"] = real.fingerprint(m2["clips"])
+    assert real.evaluate_gate(m2, bp, py, APP)["verdict"] == "INCOMPLETE"
+    m3 = copy.deepcopy(m)
+    m3["clips"][0]["audio"] = "x/other.wav"
+    m3["fingerprint"] = real.fingerprint(m3["clips"])
+    assert real.evaluate_gate(m3, bp, py, APP)["verdict"] == "INCOMPLETE"
+
+
+def test_gate_refuses_results_scored_with_other_frequency_bounds():
+    m = full_manifest()
+    py = results(m, 0.8, params={})
+    bp = results(m, 0.9)
+    assert real.evaluate_gate(m, bp, py, APP)["verdict"] == "PASS"
+    assert real.evaluate_gate(m, bp, py, APP | {"min_freq_hz": 100.0})["verdict"] == "INCOMPLETE"
+
+
+def test_score_refuses_tampered_analysis_audio(tmp_path, data_dir, monkeypatch):
+    monkeypatch.setattr(real, "CORPUS", tmp_path / "corpus")
+    d, sids = data_dir
+    write_refs(tmp_path / "refs", {"one": ref(session_id=sids[0][0], audio_sha256=sids[0][1])})
+    assert real.prepare(Namespace(tag="t", data_dir=str(d), refs=str(tmp_path / "refs"))) == 0
+    wav = next((tmp_path / "corpus" / "t").rglob("*.wav"))
+    sf.write(wav, np.zeros(22050, np.float32), 22050)  # swap the audio after prepare
+    args = Namespace(tag="t", method="pyin", tune_on_dev=False)
+    assert real.score(args) == 1
