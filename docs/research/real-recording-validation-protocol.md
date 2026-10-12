@@ -96,6 +96,11 @@ The app database is the only source of truth for holdout eligibility (`jamrecall
     the decoded-audio hash are checked, so re-wrapping the same samples doesn't help
     (`seen_audio`, `contaminated_audio`);
   - it was transcribed before tracking existed (*uncertain*).
+- **Exposure follows the audio, not just the session**: model output produced for any recording
+  (transcription or validation run) counts for every recording with the same audio (same
+  container hash or same decoded-audio hash). Unfinalized copies become contaminated (the warning
+  appears if that would disqualify an eligible recording); finalized ones are marked exposed, so
+  reopening them contaminates. Contamination tombstones record both hashes.
 - **Enforced in the database**, not just in application code:
   - every request runs in a `BEGIN IMMEDIATE` transaction with freshly read state;
   - SQLite triggers make the provenance fields write-once, `provenance_events` append-only, and

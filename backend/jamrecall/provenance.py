@@ -75,11 +75,66 @@ def contaminate(conn: sqlite3.Connection, session: dict[str, Any], reason: str) 
             "UPDATE sessions SET contaminated_at = ?, contamination_reason = ? WHERE id = ?",
             (now, reason, session["id"]),
         )
-    conn.execute(
-        "INSERT OR IGNORE INTO contaminated_audio (audio_sha256, first_at, reason) VALUES (?,?,?)",
-        (session["audio_sha256"], now, reason),
-    )
+    for h in {session["audio_sha256"], session.get("pcm_sha256")} - {None}:
+        # Both identities: the container hash and the decoded-audio hash.
+        conn.execute(
+            "INSERT OR IGNORE INTO contaminated_audio (audio_sha256, first_at, reason) "
+            "VALUES (?,?,?)",
+            (h, now, reason),
+        )
     log(conn, session, "contaminated", {"reason": reason})
+
+
+def audio_group(conn: sqlite3.Connection, session_id: str) -> list[dict[str, Any]]:
+    """The session plus every other session with the same audio (container or decoded hash).
+    Model output for one of them is model output for all of them."""
+    s = _reload(conn, session_id)
+    rows = conn.execute(
+        "SELECT id FROM sessions WHERE id != ? AND (audio_sha256 = ? "
+        "OR (? IS NOT NULL AND pcm_sha256 = ?))",
+        (s["id"], s["audio_sha256"], s.get("pcm_sha256"), s.get("pcm_sha256")),
+    ).fetchall()
+    return [s] + [_reload(conn, r[0]) for r in rows]
+
+
+def _expose_group(
+    conn: sqlite3.Connection, session_id: str, event: str, confirmed: bool, detail: dict
+) -> None:
+    """Record model-output exposure for a session and every session sharing its audio.
+
+    Any member that is still uncontaminated and has no finalized reference becomes contaminated;
+    unless `confirmed`, that raises WouldContaminate first (nothing is written).
+    """
+    group = audio_group(conn, session_id)
+    victims = [
+        m
+        for m in group
+        if m.get("contaminated_at") is None and not _annotation_final(conn, m["id"])
+    ]
+    if victims and not confirmed:
+        raise WouldContaminate(REASON_REQUEST_BEFORE_FINAL)
+    now = store.now_iso()
+    for m in group:
+        if m.get("model_exposed_at") is None:
+            conn.execute("UPDATE sessions SET model_exposed_at = ? WHERE id = ?", (now, m["id"]))
+        log(
+            conn,
+            m,
+            event,
+            detail
+            | {
+                "via_session": session_id,
+                "annotation_final": _annotation_final(conn, m["id"]),
+                "confirmed_disqualification": any(v["id"] == m["id"] for v in victims),
+            },
+        )
+    for v in victims:
+        reason = (
+            REASON_REQUEST_BEFORE_FINAL
+            if v["id"] == session_id
+            else (f"{REASON_REQUEST_BEFORE_FINAL} (identical audio in session {session_id})")
+        )
+        contaminate(conn, _reload(conn, v["id"]), reason)
 
 
 def _annotation_final(conn: sqlite3.Connection, session_id: str) -> bool:
@@ -127,26 +182,10 @@ def would_contaminate_on_transcribe(conn: sqlite3.Connection, session: dict[str,
 def on_transcription_requested(conn: sqlite3.Connection, session_id: str, confirmed: bool) -> None:
     """Call BEFORE inserting the transcription row (a trigger enforces this ordering).
 
-    Raises WouldContaminate if the recording is still eligible, has no finalized reference, and
-    the disqualification was not confirmed.
+    Exposure covers every session with the same audio. Raises WouldContaminate if any of them is
+    still eligible without a finalized reference and the disqualification was not confirmed.
     """
-    session = _reload(conn, session_id)  # fresh state inside the serialized transaction
-    final = _annotation_final(conn, session_id)
-    disqualifies = session.get("contaminated_at") is None and not final
-    if disqualifies and not confirmed:
-        raise WouldContaminate(REASON_REQUEST_BEFORE_FINAL)
-    if session.get("model_exposed_at") is None:
-        conn.execute(
-            "UPDATE sessions SET model_exposed_at = ? WHERE id = ?", (store.now_iso(), session_id)
-        )
-    log(
-        conn,
-        session,
-        "transcription_requested",
-        {"annotation_final": final, "confirmed_disqualification": bool(disqualifies)},
-    )
-    if disqualifies:
-        contaminate(conn, _reload(conn, session_id), REASON_REQUEST_BEFORE_FINAL)
+    _expose_group(conn, session_id, "transcription_requested", confirmed, {})
 
 
 def on_model_output_exposed(conn: sqlite3.Connection, session: dict[str, Any], via: str) -> None:
@@ -189,13 +228,9 @@ def baseline_complete(conn: sqlite3.Connection) -> bool:
 
 def on_validation_output(conn: sqlite3.Connection, session_id: str) -> None:
     """The validation gate is about to produce model output for this finalized recording: record
-    the exposure first, exactly like a transcription request, so a later reopen contaminates it."""
-    session = _reload(conn, session_id)
-    if session.get("model_exposed_at") is None:
-        conn.execute(
-            "UPDATE sessions SET model_exposed_at = ? WHERE id = ?", (store.now_iso(), session_id)
-        )
-    log(conn, session, "validation_output_produced")
+    the exposure first (for every session sharing its audio), so later reopening contaminates.
+    A deliberate validation run counts as confirmation for unfinalized identical copies."""
+    _expose_group(conn, session_id, "validation_output_produced", True, {})
 
 
 def status(session: dict[str, Any], baseline_ok: bool = False) -> dict[str, Any]:

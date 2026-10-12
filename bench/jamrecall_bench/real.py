@@ -119,10 +119,11 @@ def read_snapshot(db_path: Path) -> tuple[list[dict], list[str]]:
                     (row["annotation_id"],),
                 )
             ]
+            # Contaminated by container or decoded-audio identity (any session, even deleted).
             row["tombstoned"] = (
                 conn.execute(
-                    "SELECT 1 FROM contaminated_audio WHERE audio_sha256 = ?",
-                    (row["audio_sha256"],),
+                    "SELECT 1 FROM contaminated_audio WHERE audio_sha256 IN (?, ?)",
+                    (row["audio_sha256"], row.get("pcm_sha256") or ""),
                 ).fetchone()
                 is not None
             )

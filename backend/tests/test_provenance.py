@@ -451,3 +451,74 @@ def test_finalize_twice_logs_one_event(fixture_client):
     z = zipfile.ZipFile(io.BytesIO(c.get(f"/api/sessions/{sid}/export").content))
     kinds = [e["kind"] for e in json.loads(z.read("metadata.json"))["provenance_events"]]
     assert kinds.count("annotation_finalized") == 1
+
+
+# --- Codex review round 4: exposure follows audio identity across sessions ---------------
+
+
+def _remux(data: bytes) -> bytes:
+    """Same decoded samples, different container bytes."""
+    import av
+
+    buf = io.BytesIO()
+    with av.open(io.BytesIO(data)) as src, av.open(buf, "w", format="webm") as out:
+        out.metadata["title"] = "remux"
+        stream = out.add_stream_from_template(src.streams.audio[0])
+        for packet in src.demux(src.streams.audio[0]):
+            if packet.dts is None:
+                continue
+            packet.stream = stream
+            out.mux(packet)
+    return buf.getvalue()
+
+
+def _import(c, data: bytes):
+    return c.post(
+        "/api/sessions",
+        files={"audio": ("r", data, "audio/webm")},
+        data={"client_mime": "audio/webm"},
+    ).json()
+
+
+def test_model_output_for_a_copy_contaminates_the_unfinalized_original(fixture_client):
+    """Codex round 4: A recorded (not finalized); B = remux of A imported and transcribed."""
+    c = fixture_client
+    data = webm_opus_bytes(tone(2.0, 1000))
+    a = recorded(c, data).json()["id"]
+    b = _import(c, _remux(data))
+    assert b["provenance"]["holdout_eligible"] is False  # duplicate + import
+    r = transcribe(c, b["id"])
+    assert r.status_code == 409 and r.json()["code"] == "would_disqualify_holdout"
+    assert prov(c, a)["holdout_eligible"] is True  # refused: nothing recorded
+    assert transcribe(c, b["id"], confirm=True).status_code == 202
+    pa = prov(c, a)
+    assert pa["holdout_eligible"] is False and pa["model_exposed_at"]
+    assert f"identical audio in session {b['id']}" in pa["contamination_reason"]
+    finalize_holdout(c, a)
+    assert prov(c, a)["holdout_eligible"] is False
+
+
+def test_model_output_for_a_copy_after_finalization_exposes_the_original(fixture_client):
+    c = fixture_client
+    data = webm_opus_bytes(tone(2.0, 1010))
+    a = recorded(c, data).json()["id"]
+    finalize_holdout(c, a)
+    b = _import(c, _remux(data))
+    assert transcribe(c, b["id"]).status_code == 202  # A is final, B already ineligible
+    pa = prov(c, a)
+    assert pa["holdout_eligible"] is True and pa["model_exposed_at"]
+    r = c.post(f"/api/sessions/{a}/annotation/reopen")
+    assert r.status_code == 409  # reopening A now needs confirmation and contaminates
+    c.post(f"/api/sessions/{a}/annotation/reopen?confirm_disqualify=true")
+    assert prov(c, a)["holdout_eligible"] is False
+
+
+def test_contamination_records_decoded_audio_identity(fixture_client, tmp_path):
+    c = fixture_client
+    data = webm_opus_bytes(tone(2.0, 1020))
+    s = recorded(c, data).json()
+    transcribe(c, s["id"], confirm=True)
+    db = sqlite3.connect(tmp_path / "data" / "jamrecall.sqlite3")
+    pcm = db.execute("SELECT pcm_sha256 FROM sessions WHERE id = ?", (s["id"],)).fetchone()[0]
+    hashes = {r[0] for r in db.execute("SELECT audio_sha256 FROM contaminated_audio")}
+    assert {s["audio_sha256"], pcm} <= hashes
