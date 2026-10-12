@@ -522,3 +522,21 @@ def test_contamination_records_decoded_audio_identity(fixture_client, tmp_path):
     pcm = db.execute("SELECT pcm_sha256 FROM sessions WHERE id = ?", (s["id"],)).fetchone()[0]
     hashes = {r[0] for r in db.execute("SELECT audio_sha256 FROM contaminated_audio")}
     assert {s["audio_sha256"], pcm} <= hashes
+
+
+def test_duplicate_upload_does_not_taint_a_clean_finalized_original(fixture_client, tmp_path):
+    """Codex round 5 (minor): importing then deleting a copy must not exclude the clean original."""
+    c = fixture_client
+    data = webm_opus_bytes(tone(2.0, 1030))
+    a = recorded(c, data).json()
+    finalize_holdout(c, a["id"])
+    b = _import(c, _remux(data))
+    assert b["provenance"]["holdout_eligible"] is False  # the copy itself is ineligible
+    c.delete(f"/api/sessions/{b['id']}")
+    db = sqlite3.connect(tmp_path / "data" / "jamrecall.sqlite3")
+    pcm = db.execute("SELECT pcm_sha256 FROM sessions WHERE id = ?", (a["id"],)).fetchone()[0]
+    tombs = {r[0] for r in db.execute("SELECT audio_sha256 FROM contaminated_audio")}
+    assert not ({a["audio_sha256"], pcm} & tombs)
+    assert prov(c, a["id"])["holdout_eligible"] is True
+    # A later copy is still refused as an independent take.
+    assert recorded(c, data).json()["provenance"]["holdout_eligible"] is False

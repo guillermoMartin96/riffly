@@ -397,3 +397,33 @@ def test_validation_records_exposure_so_later_reopen_contaminates(app):
     assert any(
         "not holdout-eligible" in r for e in second["excluded_holdout"] for r in e["reasons"]
     )
+
+
+def test_clean_original_stays_eligible_in_validation_after_a_copy_was_imported(app):
+    """Codex round 5 (minor): backend and validation must agree on the clean original."""
+    c, var = app
+    data = webm(pluck(2.0, 57, seed=5))
+    a = c.post(
+        "/api/sessions",
+        files={"audio": ("r", data, "audio/webm")},
+        data={"client_mime": "audio/webm", "capture_info": json.dumps({"x": 1})},
+    ).json()["id"]
+    finalize(c, a, "holdout", midi=57)
+    with av.open(io.BytesIO(data)) as src:  # remux: same samples, different container bytes
+        buf = io.BytesIO()
+        with av.open(buf, "w", format="webm") as out:
+            out.metadata["title"] = "copy"
+            st = out.add_stream_from_template(src.streams.audio[0])
+            for pk in src.demux(src.streams.audio[0]):
+                if pk.dts is not None:
+                    pk.stream = st
+                    out.mux(pk)
+    b = c.post(
+        "/api/sessions",
+        files={"audio": ("r", buf.getvalue(), "audio/webm")},
+        data={"client_mime": "audio/webm"},
+    ).json()["id"]
+    c.delete(f"/api/sessions/{b}")
+    assert c.get(f"/api/sessions/{a}").json()["provenance"]["holdout_eligible"] is True
+    clips, problems, _ = real.load_dataset(var)
+    assert problems == [] and real.holdout_exclusion(clips[0]) == []

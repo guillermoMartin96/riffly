@@ -68,14 +68,20 @@ def _reload(conn: sqlite3.Connection, session_id: str) -> dict[str, Any]:
     return store.get_session(conn, session_id)  # type: ignore[return-value]
 
 
-def contaminate(conn: sqlite3.Connection, session: dict[str, Any], reason: str) -> None:
+def contaminate(
+    conn: sqlite3.Connection, session: dict[str, Any], reason: str, tombstone: bool = True
+) -> None:
+    """Mark a session contaminated (write-once). `tombstone`: also record its audio identities in
+    `contaminated_audio`. Only model-exposure contamination tombstones; a duplicate upload does
+    not, since that would wrongly taint the clean original that shares its audio (duplicates are
+    already blocked permanently through `seen_audio`)."""
     now = store.now_iso()
     if session.get("contaminated_at") is None:
         conn.execute(
             "UPDATE sessions SET contaminated_at = ?, contamination_reason = ? WHERE id = ?",
             (now, reason, session["id"]),
         )
-    for h in {session["audio_sha256"], session.get("pcm_sha256")} - {None}:
+    for h in ({session["audio_sha256"], session.get("pcm_sha256")} - {None}) if tombstone else ():
         # Both identities: the container hash and the decoded-audio hash.
         conn.execute(
             "INSERT OR IGNORE INTO contaminated_audio (audio_sha256, first_at, reason) "
@@ -164,9 +170,14 @@ def on_session_created(
         "SELECT reason FROM contaminated_audio WHERE audio_sha256 = ?", (session["audio_sha256"],)
     ).fetchone()
     if prior is not None:
-        contaminate(conn, session, f"{REASON_SAME_AUDIO} ({prior['reason']})")
+        contaminate(conn, session, f"{REASON_SAME_AUDIO} ({prior['reason']})", tombstone=False)
     elif seen is not None:
-        contaminate(conn, session, f"{REASON_DUPLICATE} (session {seen['first_session_id']})")
+        contaminate(
+            conn,
+            session,
+            f"{REASON_DUPLICATE} (session {seen['first_session_id']})",
+            tombstone=False,
+        )
     for h, kind in ((session["audio_sha256"], "container"), (pcm_sha256, "pcm")):
         conn.execute(
             "INSERT OR IGNORE INTO seen_audio (hash, kind, first_session_id, first_at) "
