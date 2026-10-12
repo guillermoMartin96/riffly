@@ -153,6 +153,8 @@ def finalize(conn: sqlite3.Connection, session_id: str) -> dict[str, Any]:
     a = get(conn, session_id)
     if a is None:
         raise AnnotationError(404, "no_annotation", "This session has no annotation")
+    if a["status"] == "final":
+        return a  # idempotent: finalizing again changes nothing (finalized_at is immutable)
     missing = [k for k in ("split", "condition", "annotator") if not a.get(k)]
     if missing:
         raise AnnotationError(422, "incomplete_annotation", f"Set {', '.join(missing)} first")

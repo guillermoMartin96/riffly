@@ -379,3 +379,24 @@ def test_sessions_from_before_tracking_are_never_eligible(tmp_path):
     st = provenance.status(row)
     assert st["holdout_eligible"] is False and "tracked from creation" in st["ineligible_reason"]
     assert conn.execute("SELECT COUNT(*) FROM seen_audio WHERE hash = 'sha-old'").fetchone()[0] == 1
+
+
+def test_finalize_is_idempotent_and_final_rows_cannot_be_inserted(fixture_client, tmp_path):
+    """Codex round 2 finding 9, plus: references cannot be created already final."""
+    c = fixture_client
+    sid = new_session(c, 800)["id"]
+    finalize_holdout(c, sid)
+    first = c.get(f"/api/sessions/{sid}/annotation").json()["finalized_at"]
+    import time
+
+    time.sleep(0.01)
+    r = c.post(f"/api/sessions/{sid}/annotation/finalize")
+    assert r.status_code == 200 and r.json()["finalized_at"] == first
+    db = sqlite3.connect(tmp_path / "data" / "jamrecall.sqlite3", isolation_level=None)
+    other = new_session(c, 810)["id"]
+    with pytest.raises(sqlite3.DatabaseError, match="created as drafts"):
+        db.execute(
+            "INSERT INTO annotations (id, session_id, status, method, seed, created_at, "
+            "updated_at) VALUES ('x', ?, 'final', 'manual', 'blank', 't', 't')",
+            (other,),
+        )

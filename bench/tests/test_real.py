@@ -243,7 +243,7 @@ def test_dataset_comes_from_the_database_with_app_provenance(app, tmp_path):
     ).json()["id"]  # no capture metadata
     finalize(c, imported, "holdout")
 
-    clips, problems = real.load_dataset(var)
+    clips, problems, _ = real.load_dataset(var)
     assert problems == []
     by = {x["session_id"]: x for x in clips}
     assert real.holdout_exclusion(by[clean]) == []
@@ -254,7 +254,7 @@ def test_dataset_comes_from_the_database_with_app_provenance(app, tmp_path):
     # Exported reference files are not inputs: editing them changes nothing.
     exported = c.get(f"/api/sessions/{dirty}/export").content
     assert exported  # (would be edited by hand; load_dataset never reads exports)
-    clips2, _ = real.load_dataset(var)
+    clips2, _, _ = real.load_dataset(var)
     assert real.fingerprint(clips2) == real.fingerprint(clips)
 
 
@@ -275,7 +275,7 @@ def test_tampering_with_audio_or_database_fails_closed(app, tmp_path):
     # Replacing the audio file on disk is detected.
     path = next((var / "media" / "sessions" / sid).glob("original.*"))
     path.write_bytes(webm(pluck(2.0, 59, seed=9)))
-    clips, problems = real.load_dataset(var)
+    clips, problems, _ = real.load_dataset(var)
     assert clips == [] and "does not match its stored sha256" in problems[0]
 
 
@@ -286,7 +286,7 @@ def test_missing_or_old_database_fails_closed(tmp_path):
     db = sqlite3.connect(tmp_path / "jamrecall.sqlite3")
     db.execute("CREATE TABLE sessions (id TEXT)")
     db.close()
-    clips, problems = real.load_dataset(tmp_path)
+    clips, problems, _ = real.load_dataset(tmp_path)
     assert clips == [] and "predates contamination tracking" in problems[0]
 
 
@@ -306,3 +306,72 @@ def test_run_validation_end_to_end(app):
         k: real.app_bp_params()[k] for k in real.BENCH_BP_KEYS
     }
     assert report["results"]["basic-pitch"]["summary"]["holdout/A"]["onset"]["f1"] == 1.0
+
+
+# --- Codex review round 2 (2026-10-12) ---------------------------------------------------------
+
+
+def test_fresh_database_has_complete_baseline(app):
+    c, var = app
+    db = sqlite3.connect(var / "jamrecall.sqlite3")
+    assert db.execute("SELECT status, created_at_schema FROM provenance_baseline").fetchone() == (
+        "complete",
+        0,
+    )
+
+
+def test_upgraded_database_cannot_hold_a_validation_dataset(tmp_path):
+    """Findings 2 and 7: history from before full tracking cannot be vouched for -> fail closed."""
+    from jamrecall.db import MIGRATIONS, migrate
+
+    db = tmp_path / "jamrecall.sqlite3"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+    for v, script in enumerate(MIGRATIONS[:4], start=1):
+        conn.executescript(f"BEGIN; {script}; INSERT INTO schema_version VALUES ({v}); COMMIT;")
+    # a schema-4 session that was later deleted: only its provenance events survive
+    conn.execute(
+        "INSERT INTO provenance_events (session_id, audio_sha256, kind, at) "
+        "VALUES ('gone', 'sha-gone', 'created', 't')"
+    )
+    conn.commit()
+    conn.close()
+    migrate(db)
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT status FROM provenance_baseline").fetchone() == ("partial",)
+    assert conn.execute("SELECT 1 FROM seen_audio WHERE hash = 'sha-gone'").fetchone() == (1,)
+    conn.close()
+    clips, problems, _ = real.load_dataset(tmp_path)
+    assert clips == [] and "existed before full contamination tracking" in problems[0]
+
+
+def test_changes_during_validation_are_detected(app, monkeypatch):
+    """Finding 8: contaminate and rewrite a reference while validation is running."""
+    c, var = app
+    hold = recorded(c, 57, seed=3)
+    finalize(c, hold, "holdout", midi=57)
+    original = real.analyse_all
+    calls = {"n": 0}
+
+    def tamper_midway(method, clips):
+        calls["n"] += 1
+        if calls["n"] == 1:  # after the dataset snapshot was read
+            c.post(f"/api/sessions/{hold}/transcriptions")
+            c.post(f"/api/sessions/{hold}/annotation/reopen?confirm_disqualify=true")
+            body = {
+                "notes": [{"start_seconds": 0.0, "end_seconds": 1.0, "midi_pitch": 61}],
+                "split": "holdout",
+                "condition": "A",
+                "annotator": "t",
+            }
+            c.put(f"/api/sessions/{hold}/annotation", json=body)
+            c.post(f"/api/sessions/{hold}/annotation/finalize")
+        return original(method, clips)
+
+    monkeypatch.setattr(real, "analyse_all", tamper_midway)
+    report = real.run_validation(var)
+    assert report["verdict"] == "INCOMPLETE"
+    assert any("changed during validation" in p for p in report["integrity_problems"])
+    # What was scored is the consistent pre-change snapshot (clean provenance, original notes).
+    [rec] = report["recordings"]
+    assert rec["notes"][0]["midi"] == 57 and rec["provenance"]["contaminated_at"] is None

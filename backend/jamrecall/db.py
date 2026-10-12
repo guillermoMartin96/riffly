@@ -216,6 +216,28 @@ MIGRATIONS: list[str] = [
     WHEN (SELECT status FROM annotations WHERE id = OLD.annotation_id) = 'final'
     BEGIN SELECT RAISE(ABORT, 'finalized reference is immutable; reopen it first'); END;
     """,
+    # 6: provenance baseline (Codex review round 2). Whether contamination tracking covered the
+    # database's entire life is recorded by migrate(); only 'complete' databases can hold a
+    # validation dataset. Also: seen_audio backfilled from the event log (deleted sessions), and
+    # references can only become final through the finalize path.
+    """
+    CREATE TABLE provenance_baseline (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        status TEXT NOT NULL CHECK (status IN ('complete', 'partial')),
+        created_at_schema INTEGER NOT NULL,
+        recorded_at TEXT NOT NULL
+    );
+    CREATE TRIGGER provenance_baseline_no_update BEFORE UPDATE ON provenance_baseline
+    BEGIN SELECT RAISE(ABORT, 'provenance baseline is permanent'); END;
+    CREATE TRIGGER provenance_baseline_no_delete BEFORE DELETE ON provenance_baseline
+    BEGIN SELECT RAISE(ABORT, 'provenance baseline is permanent'); END;
+    INSERT OR IGNORE INTO seen_audio
+        SELECT audio_sha256, 'container', session_id, MIN(at) FROM provenance_events
+        GROUP BY audio_sha256;
+    CREATE TRIGGER annotations_insert_not_final BEFORE INSERT ON annotations
+    WHEN NEW.status != 'draft'
+    BEGIN SELECT RAISE(ABORT, 'references are created as drafts and finalized explicitly'); END;
+    """,
 ]
 
 
@@ -253,6 +275,7 @@ def migrate(db_path: Path) -> int:
         conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
         row = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
         current = row[0] or 0
+        started_at = current
         for version, script in enumerate(MIGRATIONS, start=1):
             if version <= current:
                 continue
@@ -260,6 +283,15 @@ def migrate(db_path: Path) -> int:
                 f"BEGIN; {script}; INSERT INTO schema_version VALUES ({version}); COMMIT;"
             )
             current = version
+        # Record once whether this database was created with full provenance tracking. A database
+        # that existed before migration 6 has history the guard cannot vouch for ('partial').
+        conn.execute(
+            "INSERT OR IGNORE INTO provenance_baseline "
+            "(id, status, created_at_schema, recorded_at) "
+            "VALUES (1, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            ("complete" if started_at == 0 else "partial", started_at),
+        )
+        conn.commit()
         return current
     finally:
         conn.close()

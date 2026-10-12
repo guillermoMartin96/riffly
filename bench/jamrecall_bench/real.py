@@ -73,51 +73,36 @@ def fingerprint(clips: list[dict]) -> str:
 # --- dataset from the app database ----------------------------------------------------------------
 
 
-def load_dataset(data_dir: Path) -> tuple[list[dict], list[str]]:
-    """Finalized references with audio and provenance, straight from the app database.
+def read_snapshot(db_path: Path) -> tuple[list[dict], list[str]]:
+    """Every finalized reference with its provenance, read in ONE consistent database snapshot.
 
-    Returns (clips, problems). Problems are integrity failures that make the verdict INCOMPLETE.
+    Returns (records, problems). No audio is touched here.
     """
-    from jamrecall import provenance
-    from jamrecall.audio import decode_mono
-
-    db_path = data_dir / "jamrecall.sqlite3"
     if not db_path.exists():
         return [], [f"no app database at {db_path}"]
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, isolation_level=None)
     conn.row_factory = sqlite3.Row
-    problems: list[str] = []
-    clips: list[dict] = []
     try:
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)")}
-        if not {"provenance_origin", "contaminated_at", "pcm_sha256"} <= cols:
+        conn.execute("BEGIN")  # a single read transaction: all reads see the same snapshot
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if not {"provenance_baseline", "seen_audio", "contaminated_audio"} <= tables:
             return [], ["app database predates contamination tracking (start the app to migrate)"]
-        rows = conn.execute(
+        base = conn.execute("SELECT status, created_at_schema FROM provenance_baseline").fetchone()
+        if base is None or base["status"] != "complete":
+            return [], [
+                "this data directory existed before full contamination tracking "
+                f"(baseline: {dict(base) if base else 'missing'}); record the validation dataset "
+                "in a fresh data directory (see the manual-testing guide)"
+            ]
+        records = []
+        for r in conn.execute(
             """SELECT s.*, a.id AS annotation_id, a.split, a.condition, a.method, a.seed,
                       a.revision, a.finalized_at, a.annotator
                FROM sessions s JOIN annotations a ON a.session_id = s.id
                WHERE a.status = 'final' ORDER BY s.created_at"""
-        ).fetchall()
-        tombs = {r[0] for r in conn.execute("SELECT audio_sha256 FROM contaminated_audio")}
-        for r in rows:
+        ).fetchall():
             row = dict(r)
-            cid = f"{row['condition']}-{row['split']}-{row['id'][:8]}"
-            if row["split"] not in ("dev", "holdout") or row["condition"] not in MINIMUMS:
-                problems.append(f"{cid}: finalized without a valid split/condition")
-                continue
-            path = data_dir / row["audio_path"]
-            if not path.is_file():
-                problems.append(f"{cid}: original recording missing")
-                continue
-            if hashlib.sha256(path.read_bytes()).hexdigest() != row["audio_sha256"]:
-                problems.append(f"{cid}: original recording does not match its stored sha256")
-                continue
-            buf = decode_mono(path, SR)
-            pcm = hashlib.sha256(buf.samples.tobytes()).hexdigest()
-            if row.get("pcm_sha256") and pcm != row["pcm_sha256"]:
-                problems.append(f"{cid}: decoded audio differs from the hash stored at upload")
-                continue
-            notes = [
+            row["notes"] = [
                 {
                     "start": n["start_seconds"],
                     "end": n["end_seconds"],
@@ -125,42 +110,88 @@ def load_dataset(data_dir: Path) -> tuple[list[dict], list[str]]:
                     "technique": n["technique"],
                 }
                 for n in conn.execute(
-                    "SELECT * FROM annotation_notes WHERE annotation_id = ? ORDER BY start_seconds",
+                    "SELECT * FROM annotation_notes WHERE annotation_id = ? "
+                    "ORDER BY start_seconds, id",
                     (row["annotation_id"],),
                 )
             ]
-            if not notes or any(n["end"] > buf.duration_seconds + 0.001 for n in notes):
-                problems.append(f"{cid}: reference notes empty or past the end of the audio")
-                continue
-            prov = provenance.status(row)
-            if row["audio_sha256"] in tombs and prov["holdout_eligible"]:
-                prov = prov | {
-                    "holdout_eligible": False,
-                    "ineligible_reason": "audio recorded as contaminated",
-                }
-            clips.append(
-                {
-                    "id": cid,
-                    "session_id": row["id"],
-                    "split": row["split"],
-                    "condition": row["condition"],
-                    "method": row["method"],
-                    "seed": row["seed"],
-                    "revision": row["revision"],
-                    "finalized_at": row["finalized_at"],
-                    "annotator": row["annotator"],
-                    "audio_sha256": row["audio_sha256"],
-                    "pcm_sha256": pcm,
-                    "duration": buf.duration_seconds,
-                    "notes": notes,
-                    "provenance": prov,
-                    "samples": buf.samples,
-                }
+            row["tombstoned"] = (
+                conn.execute(
+                    "SELECT 1 FROM contaminated_audio WHERE audio_sha256 = ?",
+                    (row["audio_sha256"],),
+                ).fetchone()
+                is not None
             )
+            records.append(row)
+        conn.execute("COMMIT")
+        return records, []
     finally:
         conn.close()
+
+
+def snapshot_digest(records: list[dict]) -> str:
+    return hashlib.sha256(json.dumps(records, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def load_dataset(data_dir: Path) -> tuple[list[dict], list[str], str]:
+    """Finalized references with audio and provenance, straight from the app database.
+
+    Returns (clips, problems, snapshot digest). Problems are integrity failures that make the
+    verdict INCOMPLETE. References and provenance come from one snapshot, so they are consistent.
+    """
+    from jamrecall import provenance
+    from jamrecall.audio import decode_mono
+
+    records, problems = read_snapshot(data_dir / "jamrecall.sqlite3")
+    clips: list[dict] = []
+    for row in records:
+        cid = f"{row['condition']}-{row['split']}-{row['id'][:8]}"
+        if row["split"] not in ("dev", "holdout") or row["condition"] not in MINIMUMS:
+            problems.append(f"{cid}: finalized without a valid split/condition")
+            continue
+        path = data_dir / row["audio_path"]
+        if not path.is_file():
+            problems.append(f"{cid}: original recording missing")
+            continue
+        if hashlib.sha256(path.read_bytes()).hexdigest() != row["audio_sha256"]:
+            problems.append(f"{cid}: original recording does not match its stored sha256")
+            continue
+        buf = decode_mono(path, SR)
+        pcm = hashlib.sha256(buf.samples.tobytes()).hexdigest()
+        if pcm != row.get("pcm_sha256"):
+            problems.append(f"{cid}: decoded audio differs from the hash stored at upload")
+            continue
+        notes = row["notes"]
+        if not notes or any(n["end"] > buf.duration_seconds + 0.001 for n in notes):
+            problems.append(f"{cid}: reference notes empty or past the end of the audio")
+            continue
+        prov = provenance.status(row)
+        if row["tombstoned"] and prov["holdout_eligible"]:
+            prov = prov | {
+                "holdout_eligible": False,
+                "ineligible_reason": "audio recorded as contaminated",
+            }
+        clips.append(
+            {
+                "id": cid,
+                "session_id": row["id"],
+                "split": row["split"],
+                "condition": row["condition"],
+                "method": row["method"],
+                "seed": row["seed"],
+                "revision": row["revision"],
+                "finalized_at": row["finalized_at"],
+                "annotator": row["annotator"],
+                "audio_sha256": row["audio_sha256"],
+                "pcm_sha256": pcm,
+                "duration": buf.duration_seconds,
+                "notes": notes,
+                "provenance": prov,
+                "samples": buf.samples,
+            }
+        )
     mark_duplicates(clips)
-    return clips, problems
+    return clips, problems, snapshot_digest(records)
 
 
 def mark_duplicates(clips: list[dict]) -> None:
@@ -379,11 +410,16 @@ def decide(clips: list[dict], bp: dict, py: dict, problems: list[str]) -> dict:
 
 
 def run_validation(data_dir: Path) -> dict:
-    clips, problems = load_dataset(data_dir)
+    clips, problems, digest = load_dataset(data_dir)
     results = {}
     for method in ("basic-pitch", "pyin"):
         feats, secs = analyse_all(method, clips)
         results[method] = score_engine(method, clips, feats, secs, engine_params(method))
+    # Provenance only ever moves towards contamination and edits bump revisions, so any change
+    # between the snapshot and the end of scoring is detectable here.
+    after, _ = read_snapshot(data_dir / "jamrecall.sqlite3")
+    if snapshot_digest(after) != digest:
+        problems.append("references or provenance changed during validation; run again")
     report = decide(clips, results["basic-pitch"], results["pyin"], problems)
     report |= {
         "dataset_fingerprint": fingerprint(clips),
@@ -422,7 +458,7 @@ def tune_dev(args) -> int:
     adopting them requires a decision request and an app change, then a fresh validation."""
     from jamrecall_bench.methods import METHODS, grid
 
-    clips, problems = load_dataset(Path(args.data_dir).resolve())
+    clips, problems, _ = load_dataset(Path(args.data_dir).resolve())
     dev = [c for c in clips if c["split"] == "dev"]
     report = {"dev_recordings": [c["id"] for c in dev], "problems": problems, "best": {}}
     for method in ("basic-pitch", "pyin"):

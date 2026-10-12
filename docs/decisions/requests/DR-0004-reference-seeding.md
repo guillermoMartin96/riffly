@@ -41,7 +41,7 @@ model predictions. Preserve the independence of holdout evaluation. Document how
 finalized, how contamination is prevented, and how changes to finalized holdout references are handled.
 
 Documented in `docs/research/real-recording-validation-protocol.md` ("Independence of holdout
-references") and `docs/testing/manual-testing-guide.md` §7.3–7.5.
+references") and `docs/testing/manual-testing-guide.md` §7.2–7.6.
 
 Contamination guard: **approved 2026-10-12 and implemented**. Transcription requested before
 finalization, or reopening after model output was requested, permanently disqualifies a recording as

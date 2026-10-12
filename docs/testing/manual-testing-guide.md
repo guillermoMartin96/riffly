@@ -151,19 +151,31 @@ To reach ≥ 60 holdout notes with 3 takes, play about 20 or more distinct notes
 Recording one or two extra holdout takes per condition is a sensible buffer, in case one has to be
 excluded. Vary the material between takes; don't play the same phrase in dev and holdout.
 
-### 7.2 Plan the split before you play
+### 7.2 Use a dedicated, fresh data directory
+Record the whole validation dataset in its own data directory, created new for this purpose. The
+gate only accepts a database whose contamination tracking covered its entire life; a database that
+existed before this version is refused. Stop the app, then start it with:
+```sh
+JAMRECALL_DATA_DIR=$PWD/var-validation ./scripts/dev.sh
+```
+- Check that it prints `Data directory: …/var-validation`.
+- Keep exploratory takes in the normal `var/`.
+- Use this command every time you record or annotate dataset takes.
+- Never delete or wipe `var-validation/` until validation is done.
+
+### 7.3 Plan the split before you play
 Decide for each take whether it is **dev** or **holdout before recording it**. For example, write a
 list such as "A-dev-1, A-dev-2, A-hold-1, …". Never choose the split after seeing how the engine did
 on a take.
 
-### 7.3 Dev take (model-assisted annotation allowed)
+### 7.4 Dev take (model-assisted annotation allowed)
 1. **● Record** the take → listen back with **▶ Play** (re-record if it's flawed).
 2. **Transcribe**.
 3. Reference annotation → **Start from model output** → correct every note by listening (two passes).
 4. Split **dev**, Condition, Method `manual` (or `score`), Annotator, setup (guitar / amp / mic,
    distance) → **Save draft** → **Finalize**.
 
-### 7.4 Holdout take (blank annotation, no exposure to model notes)
+### 7.5 Holdout take (blank annotation, no exposure to model notes)
 1. **● Record** the take → listen back with **▶ Play** (re-record if it's flawed).
 2. **Do not click Transcribe.** The recording shows **Holdout-eligible** in green under its title.
    If you click Transcribe before finalizing, the app warns that this would permanently disqualify
@@ -188,7 +200,7 @@ What makes a holdout reference invalid (the gate excludes it automatically, list
 In each case, use the take as dev (or delete it) and record a replacement holdout take. Check the
 badge before finalizing a holdout take: it must say **Holdout-eligible**.
 
-### 7.5 Changing a finalized reference
+### 7.6 Changing a finalized reference
 - **Reopen for edits** keeps the split locked and increments the reference's revision. A finalized
   reference cannot change in any other way.
 - Before any validation run: correcting a holdout reference is allowed (for example, a typo found on
@@ -197,13 +209,13 @@ badge before finalizing a holdout take: it must say **Holdout-eligible**.
 - After holdout validation has been run: do not edit holdout references. If one is genuinely wrong,
   tell me. The change needs a new decision request, recorded with its reason and the before/after
   scores, because edits made after seeing results bias the evaluation.
-- Do not wipe `var/` while it holds the validation dataset: that erases provenance.
+- Do not wipe `var-validation/` while it holds the validation dataset: that erases provenance.
 
-### 7.6 When the takes are done
+### 7.7 When the takes are done
 Tell me the dataset is ready and I'll run it, or run it yourself:
 ```sh
 cd bench
-../backend/.venv/bin/python -m jamrecall_bench.real validate --data-dir ../var
+../backend/.venv/bin/python -m jamrecall_bench.real validate --data-dir ../var-validation
 ```
 - `validate` reads every **finalized** reference and its provenance directly from the app database.
   It checks each original recording against the hashes stored at upload, decodes it with the app's
@@ -212,5 +224,5 @@ cd bench
   shows the scores per condition, and writes `bench/results/real-validation.json`.
 - Exported or hand-edited files are not inputs, so they can't change the result.
 - Optional archival copy of the references (not used by the gate):
-  `backend/.venv/bin/python -m jamrecall.manage export-references --out bench/real/references`.
+  `JAMRECALL_DATA_DIR=$PWD/var-validation backend/.venv/bin/python -m jamrecall.manage export-references --out bench/real/references`.
 - Pass/fail criteria: protocol, "Pass criteria".

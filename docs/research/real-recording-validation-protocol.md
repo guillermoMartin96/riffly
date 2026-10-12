@@ -122,13 +122,22 @@ The app database is the only source of truth for holdout eligibility (`jamrecall
     missing or changed original recording; decoded audio differing from the hash stored at upload;
     reference notes past the end of the audio.
   - Dev and exploratory recordings may be contaminated without consequence.
+- **Complete history required**: the database records once (`provenance_baseline`) whether it was
+  created with full tracking (`complete`) or upgraded from an older version (`partial`). An upgraded
+  database may contain deleted sessions or recordings without decoded-audio hashes that the guard
+  cannot vouch for, so `validate` refuses it (INCOMPLETE). The dataset is recorded in a dedicated,
+  freshly created data directory (`var-validation/`, manual-testing guide §7.2).
+- **Consistent snapshot**: `validate` reads all references and provenance in one database read
+  transaction, then re-reads after scoring. Any change in between (e.g. a reference reopened during
+  the run) makes the verdict INCOMPLETE.
 - **Limits**:
   - The guard covers mistakes, concurrency and manipulation through the app, exported files and the
     gate's inputs.
   - Out of scope for a local single-user app: deliberately editing the SQLite file with a separate
     tool (dropping the triggers), fabricating browser capture metadata for re-encoded audio
     (different samples, so different hashes), and listening to model output outside JamRecall.
-  - Wiping `var/` erases provenance. Don't wipe a data directory that holds a validation dataset.
+  - Wiping the data directory erases provenance. Don't wipe a data directory that holds a
+    validation dataset.
 
 ## Scoring (identical to the benchmark, `bench/jamrecall_bench/score.py`)
 - Matching: mir_eval, onset ±50 ms, pitch ±50 cents (exact MIDI note); offset-aware matching also
@@ -175,14 +184,16 @@ evidence and options, and do not loosen these thresholds.
 
 ## Procedure
 ```sh
-# 1. record and annotate in JamRecall (docs/testing/manual-testing-guide.md §7); finalize every take
+# 1. record and annotate in JamRecall with JAMRECALL_DATA_DIR=<repo>/var-validation
+#    (docs/testing/manual-testing-guide.md §7); finalize every take
 # 2. from bench/, with the backend venv (app decoder, Basic Pitch, librosa, mir_eval):
-../backend/.venv/bin/python -m jamrecall_bench.real validate --data-dir ../var
+../backend/.venv/bin/python -m jamrecall_bench.real validate --data-dir ../var-validation
 #    -> prints the verdict, exclusions and scores; writes bench/results/real-validation.json
 # optional, informational only:
-../backend/.venv/bin/python -m jamrecall_bench.real tune-dev --data-dir ../var
+../backend/.venv/bin/python -m jamrecall_bench.real tune-dev --data-dir ../var-validation
 # archival copy of the finalized references (not used by the gate):
-../backend/.venv/bin/python -m jamrecall.manage export-references --out real/references
+JAMRECALL_DATA_DIR=../var-validation ../backend/.venv/bin/python -m jamrecall.manage \
+    export-references --out real/references
 ```
 The recordings are not committed (privacy). The validation report and archival reference JSON files
 are committed.

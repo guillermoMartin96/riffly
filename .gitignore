@@ -1,5 +1,6 @@
 # runtime data (recordings, sqlite)
 var/
+var-validation/
 # python
 .venv/
 __pycache__/
