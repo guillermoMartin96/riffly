@@ -102,7 +102,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def audio_file(session: dict[str, Any]) -> Path:
         return settings.data_dir / session["audio_path"]
 
-    def session_out(session: dict[str, Any], baseline_ok: bool) -> dict[str, Any]:
+    def session_out(
+        session: dict[str, Any], baseline_ok: bool, shared: bool = False
+    ) -> dict[str, Any]:
         out = {
             k: session[k]
             for k in (
@@ -119,7 +121,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         out["capture_info"] = (
             json.loads(session["capture_info"]) if session.get("capture_info") else None
         )
-        out["provenance"] = provenance.status(session, baseline_ok)
+        out["provenance"] = provenance.status(session, baseline_ok, shared)
         if "riff_count" in session:
             out["riff_count"] = session["riff_count"]
         return out
@@ -220,19 +222,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 recorded=info is not None,
             )
             s = store.get_session(conn, sid)
-            return session_out(s, provenance.baseline_complete(conn))
+            return session_out(
+                s, provenance.baseline_complete(conn), provenance.shares_audio(conn, sid)
+            )
 
     @app.get("/api/sessions")
     def list_sessions() -> list[dict[str, Any]]:
         with transaction(settings.db_path) as conn:
             ok = provenance.baseline_complete(conn)
-            return [session_out(s, ok) for s in store.list_sessions(conn)]
+            return [
+                session_out(s, ok, provenance.shares_audio(conn, s["id"]))
+                for s in store.list_sessions(conn)
+            ]
 
     @app.get("/api/sessions/{session_id}")
     def get_session(session_id: str) -> dict[str, Any]:
         with transaction(settings.db_path) as conn:
             return session_out(
-                require_session(conn, session_id), provenance.baseline_complete(conn)
+                require_session(conn, session_id),
+                provenance.baseline_complete(conn),
+                provenance.shares_audio(conn, session_id),
             )
 
     @app.get("/api/sessions/{session_id}/audio")

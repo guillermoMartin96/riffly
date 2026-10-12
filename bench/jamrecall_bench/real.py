@@ -127,6 +127,15 @@ def read_snapshot(db_path: Path) -> tuple[list[dict], list[str]]:
                 ).fetchone()
                 is not None
             )
+            # Same rule as the app: audio shared with any other live recording is not eligible.
+            row["shares_audio"] = (
+                conn.execute(
+                    "SELECT 1 FROM sessions WHERE id != ? AND (audio_sha256 = ? "
+                    "OR (? IS NOT NULL AND pcm_sha256 = ?))",
+                    (row["id"], row["audio_sha256"], row.get("pcm_sha256"), row.get("pcm_sha256")),
+                ).fetchone()
+                is not None
+            )
             records.append(row)
         conn.execute("COMMIT")
         return records, []
@@ -193,7 +202,8 @@ def load_dataset(data_dir: Path) -> tuple[list[dict], list[str], str]:
         if not notes or any(n["end"] > buf.duration_seconds + 0.001 for n in notes):
             problems.append(f"{cid}: reference notes empty or past the end of the audio")
             continue
-        prov = provenance.status(row, baseline_ok=True)  # read_snapshot verified the baseline
+        # read_snapshot verified the baseline; `shares_audio` mirrors provenance.shares_audio
+        prov = provenance.status(row, baseline_ok=True, shared=row["shares_audio"])
         if row["tombstoned"] and prov["holdout_eligible"]:
             prov = prov | {
                 "holdout_eligible": False,

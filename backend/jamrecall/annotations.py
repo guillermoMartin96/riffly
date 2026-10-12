@@ -181,7 +181,7 @@ def reopen(conn: sqlite3.Connection, session_id: str) -> dict[str, Any]:
 
 
 def reference_document(
-    session: dict[str, Any], a: dict[str, Any], baseline_ok: bool = False
+    session: dict[str, Any], a: dict[str, Any], baseline_ok: bool = False, shared: bool = False
 ) -> dict[str, Any]:
     """Protocol reference format (bench/jamrecall_bench/real.py reads it)."""
     return {
@@ -202,7 +202,7 @@ def reference_document(
         "finalized_at": a["finalized_at"],
         # Informational only: the validation gate re-reads provenance from the app database,
         # so editing this copy cannot make a contaminated recording eligible.
-        "provenance": provenance.status(session, baseline_ok),
+        "provenance": provenance.status(session, baseline_ok, shared),
         "notes": [
             {
                 "start": n["start_seconds"],

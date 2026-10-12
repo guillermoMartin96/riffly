@@ -427,3 +427,40 @@ def test_clean_original_stays_eligible_in_validation_after_a_copy_was_imported(a
     assert c.get(f"/api/sessions/{a}").json()["provenance"]["holdout_eligible"] is True
     clips, problems, _ = real.load_dataset(var)
     assert problems == [] and real.holdout_exclusion(clips[0]) == []
+
+
+def test_shared_audio_rule_agrees_between_app_and_validation(app):
+    """Codex round 6 (minor): a live copy makes the original ineligible in BOTH places."""
+    c, var = app
+    data = webm(pluck(2.0, 59, seed=6))
+    a = c.post(
+        "/api/sessions",
+        files={"audio": ("r", data, "audio/webm")},
+        data={"client_mime": "audio/webm", "capture_info": json.dumps({"x": 1})},
+    ).json()["id"]
+    finalize(c, a, "holdout", midi=59)
+    with av.open(io.BytesIO(data)) as src:
+        buf = io.BytesIO()
+        with av.open(buf, "w", format="webm") as out:
+            out.metadata["title"] = "copy"
+            st = out.add_stream_from_template(src.streams.audio[0])
+            for pk in src.demux(src.streams.audio[0]):
+                if pk.dts is not None:
+                    pk.stream = st
+                    out.mux(pk)
+    b = c.post(
+        "/api/sessions",
+        files={"audio": ("r", buf.getvalue(), "audio/webm")},
+        data={"client_mime": "audio/webm"},
+    ).json()["id"]
+    finalize(c, b, "dev", midi=59)
+
+    def both():
+        backend = c.get(f"/api/sessions/{a}").json()["provenance"]["holdout_eligible"]
+        clips, problems, _ = real.load_dataset(var)
+        clip_a = next(x for x in clips if x["session_id"] == a)
+        return backend, not real.holdout_exclusion(clip_a)
+
+    assert both() == (False, False)
+    c.delete(f"/api/sessions/{b}")
+    assert both() == (True, True)

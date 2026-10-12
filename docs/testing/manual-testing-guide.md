@@ -199,6 +199,8 @@ What makes a holdout reference invalid (the gate excludes it automatically, list
   The badge turns to **Not holdout-eligible**, permanently.
 - The reference was reopened after model output was requested (**Reopen anyway**).
 - Its audio is identical to a recording that was disqualified before.
+- Another recording in the data directory has the same audio (for example, an imported copy).
+  This lasts only while the copy exists.
 In each case, use the take as dev (or delete it) and record a replacement holdout take. Check the
 badge before finalizing a holdout take: it must say **Holdout-eligible**.
 

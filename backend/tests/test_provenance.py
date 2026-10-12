@@ -489,7 +489,8 @@ def test_model_output_for_a_copy_contaminates_the_unfinalized_original(fixture_c
     assert b["provenance"]["holdout_eligible"] is False  # duplicate + import
     r = transcribe(c, b["id"])
     assert r.status_code == 409 and r.json()["code"] == "would_disqualify_holdout"
-    assert prov(c, a)["holdout_eligible"] is True  # refused: nothing recorded
+    pa = prov(c, a)  # refused: nothing recorded (A is ineligible only because B shares its audio)
+    assert pa["model_exposed_at"] is None and pa["contaminated_at"] is None
     assert transcribe(c, b["id"], confirm=True).status_code == 202
     pa = prov(c, a)
     assert pa["holdout_eligible"] is False and pa["model_exposed_at"]
@@ -505,6 +506,10 @@ def test_model_output_for_a_copy_after_finalization_exposes_the_original(fixture
     finalize_holdout(c, a)
     b = _import(c, _remux(data))
     assert transcribe(c, b["id"]).status_code == 202  # A is final, B already ineligible
+    pa = prov(c, a)
+    assert pa["model_exposed_at"] and pa["holdout_eligible"] is False
+    assert pa["ineligible_reason"].startswith("audio shared with another recording")
+    c.delete(f"/api/sessions/{b['id']}")  # remove the copy: A is eligible again (still exposed)
     pa = prov(c, a)
     assert pa["holdout_eligible"] is True and pa["model_exposed_at"]
     r = c.post(f"/api/sessions/{a}/annotation/reopen")

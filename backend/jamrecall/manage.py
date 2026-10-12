@@ -65,7 +65,9 @@ def main(argv: list[str] | None = None) -> int:
                     if a
                     else "-"
                 )
-                elig = provenance.status(s, provenance.baseline_complete(conn))
+                elig = provenance.status(
+                    s, provenance.baseline_complete(conn), provenance.shares_audio(conn, s["id"])
+                )
                 ann += (
                     "  holdout-eligible"
                     if elig["holdout_eligible"]
@@ -96,7 +98,9 @@ def main(argv: list[str] | None = None) -> int:
                 a = annotations.get(conn, s["id"])
                 if a is None or a["status"] != "final":
                     continue
-                doc = annotations.reference_document(s, a, provenance.baseline_complete(conn))
+                doc = annotations.reference_document(
+                    s, a, provenance.baseline_complete(conn), provenance.shares_audio(conn, s["id"])
+                )
                 path = out / f"{a['condition']}-{a['split']}-{s['id'][:8]}.json"
                 path.write_text(json.dumps(doc, indent=1))
                 n += 1

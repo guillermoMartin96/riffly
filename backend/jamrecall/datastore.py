@@ -70,7 +70,9 @@ def export_zip(settings: Settings, conn: sqlite3.Connection, session_id: str) ->
         "riffs": store.list_riffs(conn, session_id),
         "annotation_status": ann["status"] if ann else None,
         # Informational copy; the validation gate re-reads provenance from the database.
-        "provenance": provenance.status(session, provenance.baseline_complete(conn)),
+        "provenance": provenance.status(
+            session, provenance.baseline_complete(conn), provenance.shares_audio(conn, session_id)
+        ),
         "provenance_events": provenance.events(conn, session_id),
     }
     buf = io.BytesIO()
@@ -84,7 +86,10 @@ def export_zip(settings: Settings, conn: sqlite3.Connection, session_id: str) ->
                 "reference.json",
                 json.dumps(
                     annotations.reference_document(
-                        session, ann, provenance.baseline_complete(conn)
+                        session,
+                        ann,
+                        provenance.baseline_complete(conn),
+                        provenance.shares_audio(conn, session_id),
                     ),
                     indent=1,
                 ),

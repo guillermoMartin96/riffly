@@ -244,7 +244,17 @@ def on_validation_output(conn: sqlite3.Connection, session_id: str) -> None:
     _expose_group(conn, session_id, "validation_output_produced", True, {})
 
 
-def status(session: dict[str, Any], baseline_ok: bool = False) -> dict[str, Any]:
+REASON_SHARED = "audio shared with another recording in this data directory (delete the copies)"
+
+
+def shares_audio(conn: sqlite3.Connection, session_id: str) -> bool:
+    """True while another live session has the same container or decoded-audio hash."""
+    return len(audio_group(conn, session_id)) > 1
+
+
+def status(
+    session: dict[str, Any], baseline_ok: bool = False, shared: bool = False
+) -> dict[str, Any]:
     """Holdout eligibility. `baseline_ok` must come from `baseline_complete(conn)`: in a database
     with history from before full tracking nothing is eligible (fail closed by default)."""
     tracked = session.get("provenance_tracked_since")
@@ -256,6 +266,8 @@ def status(session: dict[str, Any], baseline_ok: bool = False) -> dict[str, Any]
         eligible, why = False, "provenance not tracked from creation"
     elif contaminated is not None:
         eligible, why = False, session.get("contamination_reason") or "contaminated"
+    elif shared:
+        eligible, why = False, REASON_SHARED
     elif origin != "recorded":
         eligible, why = False, "not recorded with the in-app recorder"
     else:

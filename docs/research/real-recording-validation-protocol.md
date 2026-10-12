@@ -86,6 +86,9 @@ The app database is the only source of truth for holdout eligibility (`jamrecall
   - never contaminated.
 
   Imported files and recordings that existed before tracking (*pre-tracking*) are never eligible.
+  A recording whose audio (container or decoded hash) is shared with any other live recording in
+  the data directory is not eligible while the copy exists. The app and `validate` apply the same
+  rule, and deleting the copies restores eligibility, unless the recording was contaminated.
 - **Contaminated (permanent)** when any of these happens:
   - a transcription is *requested* while the recording has no finalized annotation (requesting is
     the earliest point at which model output can exist or be seen; failed runs count too);
