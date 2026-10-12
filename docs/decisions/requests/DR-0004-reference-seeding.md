@@ -49,3 +49,6 @@ holdout; so do re-uploads of audio seen before and any recording not made with t
 state is write-once and trigger-enforced in the database, and recorded in exports. The gate
 (`real validate`) reads references and provenance only from the database and fails closed.
 Details: protocol, "Contamination tracking".
+
+Contamination guard review: Codex, 7 rounds, final verdict **PASS with no remaining findings** on `16c3404`
+(`docs/reviews/2026-10-12-codex-contamination-guard.md`).

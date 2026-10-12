@@ -101,3 +101,23 @@ all passed.
   - all files were restored afterwards.
 - Manual items pending (tech lead): §6 checklist incl. the real-Chrome background-tab check; real-guitar
   validation takes (§7).
+
+### 2026-10-12 — holdout contamination guard (DR-0004 guard)
+- Implementation:
+  - write-once, trigger-enforced provenance in the app DB (migrations 4–6);
+  - exposure and contamination follow audio identity across sessions;
+  - only in-app recordings tracked from creation are eligible;
+  - the 409 `would_disqualify_holdout` confirmation, the eligibility badge and the warnings in the UI;
+  - `bench/jamrecall_bench/real.py validate` reads references and provenance only from the app DB in one
+    snapshot, verifies originals against stored container and decoded-audio hashes, records exposure
+    before running the engines, re-checks the DB after scoring, and fails closed.
+- Tests (local and CI run 38320342855 on `16c3404`): backend 92 (incl. 25 provenance tests: DB
+  invariants, concurrency, copies, deletion, migration baseline), validation gate 19 (incl. an
+  end-to-end run with both real engines), docs consistency, vitest 44 (incl. a deterministic save-race
+  test), Playwright 10 (incl. the browser holdout flows).
+- Independent review: Codex, 7 rounds, final verdict PASS with no findings
+  (`docs/reviews/2026-10-12-codex-contamination-guard.md`).
+- Thresholds, minimums and scoring are unchanged (asserted by `test_thresholds_and_minimums_unchanged`
+  and confirmed by Codex every round).
+- Not done: real-guitar validation (no recordings yet). Real-Chrome background-tab check pending
+  (manual-testing guide §6).
