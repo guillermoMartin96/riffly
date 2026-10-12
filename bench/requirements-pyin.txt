@@ -1,0 +1,7 @@
+# Candidate 1: classical pYIN pitch tracking + onset segmentation (also hosts corpus building + scoring)
+librosa==1.0.0
+numpy==2.3.5
+scipy==1.18.1
+soundfile==0.14.0
+mir_eval==0.8.2
+psutil==7.1.3

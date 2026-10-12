@@ -1,0 +1,68 @@
+name: CI
+on:
+  push:
+    branches: [main, "feature/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-24.04
+    defaults: { run: { working-directory: backend } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Clean install (pinned lock + basic-pitch --no-deps, no pip cache, pip check guard)
+        run: PIP_FLAGS=--no-cache-dir sh install.sh
+      - run: .venv/bin/ruff check .
+      - run: .venv/bin/ruff format --check .
+      - name: Lint benchmark code
+        run: .venv/bin/ruff check ../bench
+      - name: Documentation consistency (paths, links, thresholds, decision register)
+        run: .venv/bin/python ../scripts/check_docs.py
+      - name: Validation-gate integrity tests (bench/tests)
+        working-directory: bench
+        run: ../backend/.venv/bin/python -m pytest -v -p no:cacheprovider tests
+      - name: Basic Pitch inference smoke tests (browser formats, onset alignment, bench parity)
+        run: .venv/bin/pytest -v tests/test_basic_pitch.py
+      - name: Full backend test suite
+        run: .venv/bin/pytest -v --ignore tests/test_basic_pitch.py
+
+  frontend:
+    runs-on: ubuntu-24.04
+    defaults: { run: { working-directory: frontend } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22", cache: npm, cache-dependency-path: frontend/package-lock.json }
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  e2e:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "22", cache: npm, cache-dependency-path: frontend/package-lock.json }
+      - working-directory: backend
+        run: sh install.sh
+      - working-directory: frontend
+        run: npm ci && npx playwright install --with-deps chromium
+      - working-directory: frontend
+        env: { JAMRECALL_E2E_MIC: device }
+        run: npm run e2e
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-evidence
+          path: |
+            frontend/test-results/
+            frontend/playwright-report/
+          retention-days: 14

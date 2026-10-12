@@ -1,0 +1,9 @@
+{
+ "_comment": "Basic Pitch note-extraction parameters used by the app (DR-0001). Selected on GuitarSet dev (bench/results/basic-pitch.json). The real-recording gate scores exactly these; changing them requires re-validation.",
+ "onset_thresh": 0.7,
+ "frame_thresh": 0.4,
+ "min_note_ms": 58.0,
+ "min_freq_hz": 75.0,
+ "max_freq_hz": 1400.0,
+ "mono": true
+}
