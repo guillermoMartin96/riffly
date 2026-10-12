@@ -6,7 +6,7 @@ import sqlite3
 import zipfile
 
 import pytest
-from conftest import tone, upload, wav_bytes
+from conftest import tone, upload, wav_bytes, webm_opus_bytes
 
 from jamrecall import manage
 from jamrecall.db import MIGRATIONS, migrate
@@ -14,8 +14,22 @@ from jamrecall.db import MIGRATIONS, migrate
 NOTE = [{"start_seconds": 0.25, "end_seconds": 0.65, "midi_pitch": 48, "technique": None}]
 
 
+CAPTURE = json.dumps({"mime_type": "audio/webm;codecs=opus", "track_settings": {}})
+
+
+def recorded(c, data: bytes):
+    """Upload like the in-app recorder: Opus/WebM with browser capture metadata."""
+    return c.post(
+        "/api/sessions",
+        files={"audio": ("rec", data, "audio/webm")},
+        data={"client_mime": "audio/webm", "capture_info": CAPTURE},
+    )
+
+
 def new_session(c, freq=220.0):
-    return upload(c, wav_bytes(tone(2.0, freq))).json()
+    r = recorded(c, webm_opus_bytes(tone(2.0, freq)))
+    assert r.status_code == 201, r.text
+    return r.json()
 
 
 def prov(c, sid):
@@ -122,10 +136,9 @@ def test_deleting_transcriptions_or_sql_resets_cannot_clear(fixture_client, tmp_
     c = fixture_client
     sid = new_session(c)["id"]
     transcribe(c, sid, confirm=True)
-    db = sqlite3.connect(tmp_path / "data" / "jamrecall.sqlite3")
+    db = sqlite3.connect(tmp_path / "data" / "jamrecall.sqlite3", isolation_level=None)
     db.execute("DELETE FROM note_events")
     db.execute("DELETE FROM transcriptions")
-    db.commit()
     assert prov(c, sid)["holdout_eligible"] is False
     for sql in (
         "UPDATE sessions SET contaminated_at = NULL",
@@ -143,14 +156,14 @@ def test_deleting_transcriptions_or_sql_resets_cannot_clear(fixture_client, tmp_
 
 def test_reuploading_contaminated_audio_inherits_contamination(fixture_client):
     c = fixture_client
-    data = wav_bytes(tone(2.0, 330))
-    sid = upload(c, data).json()["id"]
+    data = webm_opus_bytes(tone(2.0, 330))
+    sid = recorded(c, data).json()["id"]
     transcribe(c, sid, confirm=True)
     assert c.delete(f"/api/sessions/{sid}").status_code == 204
-    again = upload(c, data).json()
+    again = recorded(c, data).json()
     assert again["provenance"]["holdout_eligible"] is False
     assert "identical to a previously contaminated" in again["provenance"]["contamination_reason"]
-    other = upload(c, wav_bytes(tone(2.0, 331))).json()
+    other = recorded(c, webm_opus_bytes(tone(2.0, 331))).json()
     assert other["provenance"]["holdout_eligible"] is True
 
 
@@ -218,3 +231,151 @@ def test_migration_marks_previously_transcribed_recordings_uncertain(tmp_path):
     assert conn.execute(
         "SELECT COUNT(*) FROM sessions WHERE provenance_tracked_since IS NULL"
     ).fetchone() == (0,)
+
+
+# --- hardening after the Codex review of the guard (2026-10-12) ----------------------------------
+
+
+def test_db_invariants_reject_out_of_order_writes(fixture_client, tmp_path):
+    """Even bypassing the API, the database refuses writes that would skip contamination."""
+    c = fixture_client
+    db = sqlite3.connect(tmp_path / "data" / "jamrecall.sqlite3", isolation_level=None)
+    fresh = new_session(c, 500)["id"]
+    with pytest.raises(sqlite3.DatabaseError, match="before creating a transcription"):
+        db.execute(
+            "INSERT INTO transcriptions (id, session_id, engine, engine_version, status, "
+            "created_at) VALUES ('x', ?, 'e', '1', 'pending', 't')",
+            (fresh,),
+        )
+    done = new_session(c, 510)["id"]
+    finalize_holdout(c, done)
+    transcribe(c, done)  # exposure after finalization: allowed, still eligible
+    with pytest.raises(sqlite3.DatabaseError, match="before reopening"):
+        db.execute("UPDATE annotations SET status = 'draft' WHERE session_id = ?", (done,))
+    aid = db.execute("SELECT id FROM annotations WHERE session_id = ?", (done,)).fetchone()[0]
+    with pytest.raises(sqlite3.DatabaseError, match="immutable"):
+        db.execute(
+            "INSERT INTO annotation_notes (annotation_id, start_seconds, end_seconds, "
+            "midi_pitch) VALUES (?, 1.0, 1.2, 60)",
+            (aid,),
+        )
+    with pytest.raises(sqlite3.DatabaseError, match="immutable"):
+        db.execute("UPDATE annotation_notes SET midi_pitch = 61 WHERE annotation_id = ?", (aid,))
+    with pytest.raises(sqlite3.DatabaseError, match="immutable"):
+        db.execute("UPDATE annotations SET split = 'dev' WHERE session_id = ?", (done,))
+    assert prov(c, done)["holdout_eligible"] is True
+
+
+def test_concurrent_reopen_and_transcribe_cannot_leave_an_exposed_draft_eligible(make_client):
+    """Codex finding 1: race reopen against transcription from two app instances."""
+    import threading
+
+    a = make_client(transcription_engine="fixture", allow_test_adapters=True)
+    b = make_client(transcription_engine="fixture", allow_test_adapters=True)
+    sids = []
+    for i in range(12):
+        sid = new_session(a, 600 + i)["id"]
+        finalize_holdout(a, sid)
+        sids.append(sid)
+    for sid in sids:
+        barrier = threading.Barrier(2)
+
+        def reopen(sid=sid, barrier=barrier):
+            barrier.wait()
+            a.post(f"/api/sessions/{sid}/annotation/reopen")
+
+        def tx(sid=sid, barrier=barrier):
+            barrier.wait()
+            b.post(f"/api/sessions/{sid}/transcriptions")
+
+        threads = [threading.Thread(target=reopen), threading.Thread(target=tx)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        p = prov(a, sid)
+        status = a.get(f"/api/sessions/{sid}/annotation").json()["status"]
+        exposed = p["model_exposed_at"] is not None
+        # Invariant: an exposed recording whose reference is open again must be contaminated.
+        assert not (exposed and status == "draft" and p["holdout_eligible"]), (sid, p, status)
+
+
+def test_reupload_after_post_final_transcription_is_ineligible(fixture_client):
+    """Codex finding 2: transcribe after finalization (clean), then re-upload identical audio."""
+    c = fixture_client
+    data = webm_opus_bytes(tone(2.0, 700))
+    first = recorded(c, data).json()["id"]
+    finalize_holdout(c, first)
+    transcribe(c, first)
+    assert prov(c, first)["holdout_eligible"] is True
+    c.delete(f"/api/sessions/{first}")
+    again = recorded(c, data).json()
+    assert again["provenance"]["holdout_eligible"] is False
+    assert "duplicate of audio uploaded before" in again["provenance"]["contamination_reason"]
+
+
+def test_rewrapped_audio_with_same_samples_is_ineligible(fixture_client):
+    """Codex finding 7: same decoded samples in different container bytes."""
+    import av
+
+    c = fixture_client
+    samples = tone(2.0, 710)
+    first = recorded(c, webm_opus_bytes(samples)).json()
+    buf = io.BytesIO()
+    with (
+        av.open(io.BytesIO(webm_opus_bytes(samples))) as src,
+        av.open(buf, "w", format="webm") as out,
+    ):
+        out.metadata["title"] = "re-wrapped"
+        stream = out.add_stream_from_template(src.streams.audio[0])
+        for packet in src.demux(src.streams.audio[0]):
+            if packet.dts is None:
+                continue
+            packet.stream = stream
+            out.mux(packet)
+    rewrapped = buf.getvalue()
+    assert rewrapped != webm_opus_bytes(samples)
+    again = recorded(c, rewrapped).json()
+    assert again["audio_sha256"] != first["audio_sha256"]
+    assert again["provenance"]["holdout_eligible"] is False
+    assert "duplicate" in again["provenance"]["contamination_reason"]
+
+
+def test_imported_files_are_never_holdout_eligible(fixture_client):
+    """Uploads without the in-app recorder's capture metadata, or as WAV, are imports."""
+    c = fixture_client
+    plain = upload(c, wav_bytes(tone(2.0, 720))).json()
+    assert plain["provenance"]["holdout_eligible"] is False
+    assert plain["provenance"]["ineligible_reason"] == "not recorded with the in-app recorder"
+    wav_with_meta = c.post(
+        "/api/sessions",
+        files={"audio": ("r", wav_bytes(tone(2.0, 721)), "audio/wav")},
+        data={"client_mime": "audio/wav", "capture_info": CAPTURE},
+    ).json()
+    assert wav_with_meta["provenance"]["origin"] == "imported"
+
+
+def test_sessions_from_before_tracking_are_never_eligible(tmp_path):
+    """Codex finding 5: absence of a transcription row is not evidence of clean provenance."""
+    db = tmp_path / "old.sqlite3"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+    for v, script in enumerate(MIGRATIONS[:3], start=1):
+        conn.executescript(f"BEGIN; {script}; INSERT INTO schema_version VALUES ({v}); COMMIT;")
+    conn.execute(
+        "INSERT INTO sessions (id, audio_path, audio_mime, audio_bytes, audio_sha256, "
+        "duration_seconds, sample_rate, created_at, capture_info) VALUES ('old', 'p', "
+        "'audio/webm', 1, 'sha-old', 1, 22050, 't', '{}')"
+    )
+    conn.commit()
+    conn.close()
+    migrate(db)
+    from jamrecall import provenance
+
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    row = dict(conn.execute("SELECT * FROM sessions WHERE id = 'old'").fetchone())
+    assert row["provenance_origin"] == "pre-tracking"
+    st = provenance.status(row)
+    assert st["holdout_eligible"] is False and "tracked from creation" in st["ineligible_reason"]
+    assert conn.execute("SELECT COUNT(*) FROM seen_audio WHERE hash = 'sha-old'").fetchone()[0] == 1

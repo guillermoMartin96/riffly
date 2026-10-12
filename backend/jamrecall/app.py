@@ -213,7 +213,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 created_at=store.now_iso(),
                 capture_info=info,
             )
-            provenance.on_session_created(conn, s)
+            provenance.on_session_created(
+                conn,
+                s,
+                pcm_sha256=hashlib.sha256(buf.samples.tobytes()).hexdigest(),
+                recorded=info is not None,
+            )
             s = store.get_session(conn, sid)
         return session_out(s)
 
@@ -294,19 +299,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             s = require_session(conn, session_id)
             if not audio_file(s).is_file():
                 raise ApiError(409, "audio_missing", "The original recording file is missing")
-            t = store.insert_transcription(
-                conn, session_id, adapter.engine, adapter.version, adapter.test_only
-            )
             try:
-                # Before finalization this permanently disqualifies the recording as holdout.
-                provenance.on_transcription_requested(conn, s, t["id"], confirm_disqualify)
+                # Recorded before the row exists (trigger-enforced). Before finalization this
+                # permanently disqualifies the recording as holdout.
+                provenance.on_transcription_requested(conn, session_id, confirm_disqualify)
             except provenance.WouldContaminate as exc:
                 raise ApiError(
                     409,
                     "would_disqualify_holdout",
                     "Transcribing now permanently makes this recording ineligible as a holdout "
                     f"reference ({exc.reason}). Repeat with confirm_disqualify=true to proceed.",
-                ) from exc  # the transaction rolls back: no transcription row is created
+                ) from exc  # the transaction rolls back: nothing is recorded
+            t = store.insert_transcription(
+                conn, session_id, adapter.engine, adapter.version, adapter.test_only
+            )
+            provenance.log(conn, s, "transcription_created", {"transcription_id": t["id"]})
             out = transcription_out(conn, t)
         tasks.add_task(run_transcription, settings, adapter, t["id"])
         return out
@@ -375,7 +382,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise ApiError(404, "no_annotation", "This session has no annotation")
             try:
                 # Editing after model output was requested permanently disqualifies holdout use.
-                provenance.on_reopen(conn, s, confirm_disqualify)
+                provenance.on_reopen(conn, s["id"], confirm_disqualify)
             except provenance.WouldContaminate as exc:
                 raise ApiError(
                     409,

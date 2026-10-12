@@ -35,10 +35,15 @@ export async function installMic(page: Page) {
   });
 }
 
+let takeCounter = 0;
+
 export async function recordPhrase(page: Page, seconds: number) {
   await page.getByRole('button', { name: /● Record/ }).click();
   await expect(page.getByRole('button', { name: /Stop/ })).toBeVisible();
-  await page.waitForTimeout(seconds * 1000);
+  // The fake microphone replays the same file, so equal-length takes are bit-identical and the
+  // holdout guard (correctly) flags them as duplicates. Give every take in a run a distinct length
+  // (130 ms apart, larger than one 60 ms Opus frame).
+  await page.waitForTimeout(seconds * 1000 + 70 + 130 * (takeCounter++ % 12));
   await page.getByRole('button', { name: /Stop/ }).click();
   await expect(page.getByTestId('session-view')).toBeVisible({ timeout: 15_000 });
   return (await page.getByTestId('session-view').getAttribute('data-session-id'))!;

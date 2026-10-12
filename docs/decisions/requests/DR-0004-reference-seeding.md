@@ -45,5 +45,7 @@ references") and `docs/testing/manual-testing-guide.md` §7.3–7.5.
 
 Contamination guard: **approved 2026-10-12 and implemented**. Transcription requested before
 finalization, or reopening after model output was requested, permanently disqualifies a recording as
-holdout. The state is write-once, recorded in exports, and re-read by the gate from the app database
-(fail closed). Details: protocol, "Contamination tracking".
+holdout; so do re-uploads of audio seen before and any recording not made with the in-app recorder. The
+state is write-once and trigger-enforced in the database, and recorded in exports. The gate
+(`real validate`) reads references and provenance only from the database and fails closed.
+Details: protocol, "Contamination tracking".

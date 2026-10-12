@@ -1,121 +1,53 @@
-"""Integrity of the real-recording gate (Codex interim review findings 1, 2, 7, 8, 10)."""
+"""Real-recording validation gate: integrity, contamination guard, decision logic."""
 
-import copy
+import io
 import json
-from argparse import Namespace
+import sqlite3
 
+import av
 import numpy as np
 import pytest
-import soundfile as sf
+from fastapi.testclient import TestClient
 
 from jamrecall_bench import real
 from jamrecall_bench.score import aggregate, clip_stats
 
-APP = real.app_bp_params()
-CLEAN = {"tracked": True, "contaminated": False, "reason": None}
+CLEAN = {"holdout_eligible": True, "ineligible_reason": None, "model_exposed_at": None}
 
 
-def db_of(manifest, **overrides):
-    """Database provenance as the gate would read it (clean unless overridden by session id)."""
-    return {
-        c["tags"]["session_id"]: overrides.get(c["tags"]["session_id"], dict(CLEAN))
-        for c in manifest["clips"]
-    }
+# --- helpers ------------------------------------------------------------------------------------
 
 
-def eligible_ids(manifest):
-    return sorted(
-        c["id"]
-        for c in manifest["clips"]
-        if c["split"] == "holdout" and not real.holdout_exclusion(c, c["tags"].get("provenance"))
-    )
-
-
-BP_PARAMS = {k: APP[k] for k in real.BENCH_BP_KEYS}
-
-
-def ref(**kw):
-    base = {
-        "session_id": "s1",
-        "audio_sha256": "a" * 64,
-        "split": "dev",
-        "condition": "A",
-        "method": "manual",
-        "status": "final",
-        "seed": "blank",
-        "notes": [{"start": 0.1, "end": 0.3, "midi": 60}],
-    }
-    return base | kw
-
-
-def test_reference_requires_explicit_status_and_seed():
-    r = ref()
-    del r["status"], r["seed"]
-    errs = real.validate_reference(r, "x")
-    assert any("'status'" in e for e in errs) and any("'seed'" in e for e in errs)
-    assert real.validate_reference(ref(status="draft"), "x")
-    assert real.validate_reference(ref(seed="copied"), "x")
-    assert real.validate_reference(ref(seed="transcription:abc:basic-pitch@0.4.0"), "x") == []
-
-
-def test_duplicates_refused_across_splits():
-    errs = real.check_duplicates([("a", ref()), ("b", ref(split="holdout"))])
-    assert any("duplicate session" in e for e in errs)
-    errs = real.check_duplicates([("a", ref()), ("b", ref(session_id="s2"))])
-    assert any("duplicate audio sha256" in e for e in errs)
-    assert (
-        real.check_duplicates([("a", ref()), ("b", ref(session_id="s2", audio_sha256="b" * 64))])
-        == []
-    )
-
-
-def test_technique_exclusion_drops_matched_estimates():
-    ref_notes = [
-        {"start": 0.1, "end": 0.3, "midi": 60},
-        {"start": 0.5, "end": 0.8, "midi": 62, "technique": "bend"},
-    ]
-    est = [{"start": 0.1, "end": 0.3, "midi": 60}, {"start": 0.51, "end": 0.8, "midi": 62}]
-    plain_ref, plain_est = real.without_technique_notes(ref_notes, est)
-    assert aggregate([clip_stats(plain_ref, plain_est)])["onset"]["f1"] == 1.0
-
-
-# --- gate ---------------------------------------------------------------------------------------
-
-
-def clip(cid, split, cond, seed="blank", n=20):
+def clip(cid, split, cond, n=20, seed="blank", prov=None, finalized="2026-10-12T10:00:00Z"):
     notes = [
         {"start": i * 0.5, "end": i * 0.5 + 0.4, "midi": 60, "technique": None} for i in range(n)
     ]
     return {
         "id": cid,
+        "session_id": cid,
         "split": split,
-        "audio": f"x/{cid}.wav",
-        "wav_sha256": cid,
+        "condition": cond,
+        "seed": seed,
+        "revision": 1,
+        "finalized_at": finalized,
+        "audio_sha256": f"a-{cid}",
+        "pcm_sha256": f"p-{cid}",
         "duration": n * 0.5,
         "notes": notes,
-        "tags": {
-            "condition": cond,
-            "method": "manual",
-            "seed": seed,
-            "revision": 1,
-            "session_id": cid,
-            "audio_sha256": cid,
-            "provenance": dict(CLEAN),
-        },
+        "provenance": dict(CLEAN) if prov is None else prov,
     }
 
 
-def full_manifest():
-    clips = [
+def full_dataset():
+    return [
         clip(f"{c}-{s}{i}", s, c)
         for c in "ABC"
         for s, k in (("dev", 2), ("holdout", 3))
         for i in range(k)
     ]
-    return {"clips": clips, "fingerprint": real.fingerprint(clips)}
 
 
-def summary_entry(f1, exact=1.0):
+def entry(f1, exact=1.0):
     return {
         "onset": {"precision": f1, "recall": f1, "f1": f1},
         "onset_offset": {"f1": f1},
@@ -123,326 +55,254 @@ def summary_entry(f1, exact=1.0):
     }
 
 
-def results(manifest, f1=0.9, per_cond=None, params=BP_PARAMS, tuned=None):
-    summary = {
-        f"holdout/{c}": summary_entry(*(per_cond or {}).get(c, (f1,))) for c in ("A", "B", "C")
-    }
-    summary["holdout/A+B+C"] = summary_entry(f1)
-    return {
-        "params": params,
-        "app_params": APP if params == BP_PARAMS else None,  # what score() records for basic-pitch
-        "tuned_on_real_dev": tuned,
-        "manifest_fingerprint": manifest["fingerprint"],
-        "scored_clip_ids": sorted(c["id"] for c in manifest["clips"]),
-        "holdout_included_ids": eligible_ids(manifest),
-        "summary": summary,
-    }
+def scores(f1, per_cond=None):
+    s = {f"holdout/{c}": entry(*(per_cond or {}).get(c, (f1,))) for c in "ABC"}
+    s["holdout/A+B+C"] = entry(f1)
+    return {"summary": s}
 
 
-def test_gate_passes_only_with_complete_matching_evidence():
-    m = full_manifest()
-    g = real.evaluate_gate(m, results(m, 0.9), results(m, 0.8, params={}), APP, db_of(m))
-    assert g["verdict"] == "PASS", g
+# --- exclusion rules ----------------------------------------------------------------------------
 
 
-def test_gate_refuses_stale_results():
-    m = full_manifest()
-    bp, py = results(m, 0.9), results(m, 0.8, params={})
-    m2 = copy.deepcopy(m)
-    m2["clips"][0]["notes"][0]["midi"] = 61  # a reference changed after scoring
-    m2["fingerprint"] = real.fingerprint(m2["clips"])
-    g = real.evaluate_gate(m2, bp, py, APP, db_of(m2))
-    assert g["verdict"] == "INCOMPLETE"
-    assert any("different manifest" in p for p in g["integrity_problems"])
+def test_exclusion_reasons():
+    assert real.holdout_exclusion(clip("x", "holdout", "A")) == []
+    assert real.holdout_exclusion(clip("x", "dev", "A", prov={})) == []  # dev never excluded
+    r = real.holdout_exclusion(clip("x", "holdout", "A", seed="transcription:t:bp@1"))
+    assert r == ["reference seeded from engine output"]
+    r = real.holdout_exclusion(clip("x", "holdout", "A", prov={}))
+    assert r == ["provenance unknown (fail closed)"]
+    bad = {"holdout_eligible": False, "ineligible_reason": "contaminated", "model_exposed_at": None}
+    assert real.holdout_exclusion(clip("x", "holdout", "A", prov=bad)) == [
+        "not holdout-eligible: contaminated"
+    ]
+    early = dict(CLEAN, model_exposed_at="2026-10-12T09:00:00Z")  # before finalized_at
+    assert real.holdout_exclusion(clip("x", "holdout", "A", prov=early)) == [
+        "model output requested before the latest finalization"
+    ]
+    late = dict(CLEAN, model_exposed_at="2026-10-12T11:00:00Z")  # after finalization: fine
+    assert real.holdout_exclusion(clip("x", "holdout", "A", prov=late)) == []
 
 
-def test_gate_refuses_missing_condition_summaries():
-    m = full_manifest()
-    bp = results(m, 0.95)
-    bp["summary"] = {"holdout/A+B+C": summary_entry(0.95)}  # no per-condition results
-    g = real.evaluate_gate(m, bp, results(m, 0.5, params={}), APP, db_of(m))
-    assert g["verdict"] == "INCOMPLETE" and g["missing_summaries"]
+def test_duplicates_within_dataset_are_all_flagged():
+    a, b, c = clip("a", "dev", "A"), clip("b", "holdout", "A"), clip("c", "holdout", "A")
+    b["pcm_sha256"] = a["pcm_sha256"]  # same decoded audio, different container
+    real.mark_duplicates([a, b, c])
+    assert a.get("duplicate") and b.get("duplicate") and not c.get("duplicate")
+    assert "audio appears more than once in the dataset" in real.holdout_exclusion(b)
 
 
-def test_gate_refuses_params_other_than_the_apps():
-    m = full_manifest()
-    py = results(m, 0.5, params={})
-    tuned = results(m, 0.95, tuned={"onset_thresh": 0.3})
-    assert real.evaluate_gate(m, tuned, py, APP, db_of(m))["verdict"] == "INCOMPLETE"
-    other = results(m, 0.95, params=BP_PARAMS | {"onset_thresh": 0.3})
-    assert real.evaluate_gate(m, other, py, APP, db_of(m))["verdict"] == "INCOMPLETE"
+# --- decision ------------------------------------------------------------------------------------
 
 
-def test_gate_fails_on_poor_condition_or_losing_to_pyin():
-    m = full_manifest()
-    py = results(m, 0.5, params={})
-    poor = results(m, 0.9, per_cond={"B": (0.65,)})
-    g = real.evaluate_gate(m, poor, py, APP, db_of(m))
-    assert g["verdict"] == "FAIL" and g["poor_conditions"] == ["B"]
-    bad_pitch = results(m, 0.9, per_cond={"C": (0.9, 0.85)})
-    assert real.evaluate_gate(m, bad_pitch, py, APP, db_of(m))["poor_conditions"] == ["C"]
+def test_pass_requires_all_criteria():
+    d = full_dataset()
+    g = real.decide(d, scores(0.9), scores(0.8), [])
     assert (
-        real.evaluate_gate(m, results(m, 0.85), results(m, 0.9, params={}), APP, db_of(m))[
-            "verdict"
-        ]
-        == "FAIL"
+        g["verdict"] == "PASS" and len(g["eligible_holdout"]) == 9 and g["excluded_holdout"] == []
     )
 
 
-def test_engine_seeded_holdout_does_not_count_toward_minimums():
-    m = full_manifest()
-    m["clips"][2]["tags"]["seed"] = "transcription:x:basic-pitch@0.4.0"  # an A holdout clip
-    m["fingerprint"] = real.fingerprint(m["clips"])
-    g = real.evaluate_gate(m, results(m, 0.9), results(m, 0.8, params={}), APP, db_of(m))
-    assert g["verdict"] == "INCOMPLETE" and "A" in g["conditions_below_minimum"]
+def test_fail_on_poor_condition_pitch_or_pyin():
+    d = full_dataset()
+    assert real.decide(d, scores(0.9, {"B": (0.65,)}), scores(0.8), [])["poor_conditions"] == ["B"]
+    assert real.decide(d, scores(0.9, {"C": (0.9, 0.85)}), scores(0.8), [])["verdict"] == "FAIL"
+    assert real.decide(d, scores(0.85), scores(0.9), [])["verdict"] == "FAIL"
+    assert real.decide(d, scores(0.79), scores(0.5), [])["verdict"] == "FAIL"
 
 
-# --- prepare end to end ---------------------------------------------------------------------------
+def test_contaminated_holdout_does_not_count_and_is_reported():
+    d = full_dataset()
+    victim = next(c for c in d if c["split"] == "holdout" and c["condition"] == "B")
+    victim["provenance"] = {
+        "holdout_eligible": False,
+        "model_exposed_at": "x",
+        "ineligible_reason": "transcription requested before the reference "
+        "annotation was finalized",
+    }
+    g = real.decide(d, scores(0.9), scores(0.8), [])
+    assert g["verdict"] == "INCOMPLETE" and "B" in g["conditions_below_minimum"]
+    assert [e["id"] for e in g["excluded_holdout"]] == [victim["id"]]
+    assert victim["id"] not in g["eligible_holdout"]
 
 
-@pytest.fixture
-def data_dir(tmp_path):
-    from jamrecall import store
-    from jamrecall.db import migrate, transaction
-
-    d = tmp_path / "var"
-    migrate(d / "jamrecall.sqlite3")
-    sids = []
-    for i in range(2):
-        audio = (0.3 * np.sin(2 * np.pi * 220 * np.arange(22050) / 22050)).astype(np.float32)
-        path = d / "media" / "sessions" / f"s{i}" / "original.wav"
-        path.parent.mkdir(parents=True)
-        sf.write(path, audio * (i + 1) / 2, 22050)
-        import hashlib
-
-        sha = hashlib.sha256(path.read_bytes()).hexdigest()
-        with transaction(d / "jamrecall.sqlite3") as conn:
-            store.insert_session(
-                conn,
-                id=f"s{i}",
-                audio_path=f"media/sessions/s{i}/original.wav",
-                audio_mime="audio/wav",
-                audio_bytes=path.stat().st_size,
-                audio_sha256=sha,
-                duration_seconds=1.0,
-                sample_rate=22050,
-                created_at="t",
-            )
-        with transaction(d / "jamrecall.sqlite3") as conn:
-            from jamrecall import provenance
-
-            provenance.on_session_created(conn, store.get_session(conn, f"s{i}"))
-        sids.append((f"s{i}", sha))
-    return d, sids
+def test_integrity_problems_or_missing_summaries_are_incomplete():
+    d = full_dataset()
+    assert real.decide(d, scores(0.9), scores(0.8), ["x"])["verdict"] == "INCOMPLETE"
+    bp = scores(0.9)
+    del bp["summary"]["holdout/C"]
+    assert real.decide(d, bp, scores(0.8), [])["verdict"] == "INCOMPLETE"
 
 
-def write_refs(folder, refs):
-    folder.mkdir(parents=True, exist_ok=True)
-    for name, r in refs.items():
-        (folder / f"{name}.json").write_text(json.dumps(r))
+def test_contaminated_dev_recordings_are_fine():
+    d = full_dataset()
+    for c in d:
+        if c["split"] == "dev":
+            c["provenance"] = {"holdout_eligible": False, "ineligible_reason": "x"}
+    assert real.decide(d, scores(0.9), scores(0.8), [])["verdict"] == "PASS"
 
 
-def test_prepare_writes_fingerprinted_manifest(tmp_path, data_dir, monkeypatch):
-    monkeypatch.setattr(real, "CORPUS", tmp_path / "corpus")
-    d, sids = data_dir
-    write_refs(
-        tmp_path / "refs",
-        {
-            "one": ref(session_id=sids[0][0], audio_sha256=sids[0][1]),
-            "two": ref(session_id=sids[1][0], audio_sha256=sids[1][1], split="holdout"),
-        },
-    )
-    args = Namespace(tag="t", data_dir=str(d), refs=str(tmp_path / "refs"))
-    assert real.prepare(args) == 0
-    m = json.loads((tmp_path / "corpus" / "t" / "manifest.json").read_text())
-    assert m["fingerprint"] == real.fingerprint(m["clips"]) and len(m["clips"]) == 2
+def test_thresholds_and_minimums_unchanged():
+    assert (real.GATE_F1, real.POOR_F1, real.POOR_PITCH) == (0.80, 0.70, 0.90)
+    assert real.MINIMUMS == {"A": (2, 3, 60), "B": (2, 3, 60), "C": (2, 3, 60), "D": (1, 2, 0)}
 
 
-def test_prepare_refuses_duplicates_and_leaves_no_manifest(tmp_path, data_dir, monkeypatch):
-    monkeypatch.setattr(real, "CORPUS", tmp_path / "corpus")
-    d, sids = data_dir
-    good = ref(session_id=sids[0][0], audio_sha256=sids[0][1])
-    write_refs(tmp_path / "refs", {"one": good, "copy": good | {"split": "holdout"}})
-    args = Namespace(tag="t", data_dir=str(d), refs=str(tmp_path / "refs"))
-    assert real.prepare(args) == 1
-    assert not (tmp_path / "corpus" / "t" / "manifest.json").exists()
-
-
-def test_prepare_refuses_notes_beyond_the_recording(tmp_path, data_dir, monkeypatch):
-    monkeypatch.setattr(real, "CORPUS", tmp_path / "corpus")
-    d, sids = data_dir
-    late = ref(
-        session_id=sids[0][0],
-        audio_sha256=sids[0][1],
-        notes=[{"start": 0.5, "end": 1.5, "midi": 60}],
-    )  # recording is 1.0 s
-    write_refs(tmp_path / "refs", {"late": late})
-    args = Namespace(tag="t", data_dir=str(d), refs=str(tmp_path / "refs"))
-    assert real.prepare(args) == 1
-
-
-def test_technique_exclusion_respects_pitch_and_plain_matches():
-    # Codex follow-up case: the only estimate matches the plain note, not the tagged one.
-    ref_notes = [
+def test_technique_exclusion_drops_only_matched_estimates():
+    ref = [
+        {"start": 0.1, "end": 0.3, "midi": 60},
+        {"start": 0.5, "end": 0.8, "midi": 62, "technique": "bend"},
+    ]
+    est = [{"start": 0.1, "end": 0.3, "midi": 60}, {"start": 0.51, "end": 0.8, "midi": 62}]
+    pr, pe = real.without_technique_notes(ref, est)
+    assert aggregate([clip_stats(pr, pe)])["onset"]["f1"] == 1.0
+    ref2 = [
         {"start": 0.10, "end": 0.12, "midi": 60},
         {"start": 0.13, "end": 0.3, "midi": 62, "technique": "bend"},
     ]
-    est = [{"start": 0.13, "end": 0.3, "midi": 60}]
-    plain_ref, plain_est = real.without_technique_notes(ref_notes, est)
-    assert plain_est == est
-    assert aggregate([clip_stats(plain_ref, plain_est)])["onset"]["f1"] == 1.0
+    est2 = [{"start": 0.13, "end": 0.3, "midi": 60}]
+    assert real.without_technique_notes(ref2, est2)[1] == est2
 
 
-def test_gate_refuses_changed_analysis_audio():
-    m = full_manifest()
-    bp, py = results(m, 0.9), results(m, 0.8, params={})
-    m2 = copy.deepcopy(m)
-    m2["clips"][0]["wav_sha256"] = "changed"
-    m2["fingerprint"] = real.fingerprint(m2["clips"])
-    assert real.evaluate_gate(m2, bp, py, APP, db_of(m2))["verdict"] == "INCOMPLETE"
-    m3 = copy.deepcopy(m)
-    m3["clips"][0]["audio"] = "x/other.wav"
-    m3["fingerprint"] = real.fingerprint(m3["clips"])
-    assert real.evaluate_gate(m3, bp, py, APP, db_of(m3))["verdict"] == "INCOMPLETE"
+# --- integration with a real app database -----------------------------------------------
 
 
-def test_gate_refuses_results_scored_with_other_frequency_bounds():
-    m = full_manifest()
-    py = results(m, 0.8, params={})
-    bp = results(m, 0.9)
-    assert real.evaluate_gate(m, bp, py, APP, db_of(m))["verdict"] == "PASS"
-    assert (
-        real.evaluate_gate(m, bp, py, APP | {"min_freq_hz": 100.0}, db_of(m))["verdict"]
-        == "INCOMPLETE"
+def pluck(seconds, midi, sr=48000, seed=0):
+    rng = np.random.default_rng(seed)
+    period = int(round(sr / (440 * 2 ** ((midi - 69) / 12))))
+    buf = rng.uniform(-1, 1, period)
+    out = np.empty(int(seconds * sr))
+    for k in range(out.size):
+        j = k % period
+        out[k] = buf[j]
+        buf[j] = 0.996 * 0.5 * (buf[j] + buf[(j + 1) % period])
+    return (0.5 * out).astype(np.float32)
+
+
+def webm(samples, sr=48000):
+    buf = io.BytesIO()
+    with av.open(buf, "w", format="webm") as out:
+        stream = out.add_stream("libopus", rate=sr, layout="mono")
+        for i in range(0, samples.size, 960):
+            chunk = samples[i : i + 960]
+            frame = av.AudioFrame.from_ndarray(chunk.reshape(1, -1), format="flt", layout="mono")
+            frame.sample_rate, frame.pts = sr, i
+            for p in stream.encode(frame):
+                out.mux(p)
+        for p in stream.encode(None):
+            out.mux(p)
+    return buf.getvalue()
+
+
+@pytest.fixture
+def app(tmp_path):
+    from jamrecall.app import create_app
+    from jamrecall.config import Settings
+
+    settings = Settings(
+        data_dir=tmp_path / "var", transcription_engine="fixture", allow_test_adapters=True
     )
+    return TestClient(create_app(settings)), tmp_path / "var"
 
 
-def test_score_refuses_tampered_analysis_audio(tmp_path, data_dir, monkeypatch):
-    monkeypatch.setattr(real, "CORPUS", tmp_path / "corpus")
-    d, sids = data_dir
-    write_refs(tmp_path / "refs", {"one": ref(session_id=sids[0][0], audio_sha256=sids[0][1])})
-    assert real.prepare(Namespace(tag="t", data_dir=str(d), refs=str(tmp_path / "refs"))) == 0
-    wav = next((tmp_path / "corpus" / "t").rglob("*.wav"))
-    sf.write(wav, np.zeros(22050, np.float32), 22050)  # swap the audio after prepare
-    args = Namespace(tag="t", method="pyin", tune_on_dev=False)
-    assert real.score(args) == 1
-
-
-# --- contamination guard (DR-0004 guard, 2026-10-12) ---------------------------------------
-
-CONTAMINATED = {
-    "tracked": True,
-    "contaminated": True,
-    "reason": "transcription requested before the reference annotation was finalized",
-}
-
-
-def test_clean_holdout_recordings_remain_eligible():
-    m = full_manifest()
-    g = real.evaluate_gate(m, results(m, 0.9), results(m, 0.8, params={}), APP, db_of(m))
-    assert g["verdict"] == "PASS" and g["excluded_holdout"] == []
-    assert len(g["eligible_holdout"]) == 9
-
-
-def test_contaminated_holdout_is_excluded_reported_and_not_counted():
-    m = full_manifest()
-    target = next(
-        c for c in m["clips"] if c["split"] == "holdout" and c["tags"]["condition"] == "B"
+def recorded(c, midi, seed=0):
+    r = c.post(
+        "/api/sessions",
+        files={"audio": ("r", webm(pluck(2.0, midi, seed=seed)), "audio/webm")},
+        data={"client_mime": "audio/webm", "capture_info": json.dumps({"x": 1})},
     )
-    target["tags"]["provenance"] = dict(CONTAMINATED)  # prepare recorded the DB state
-    m["fingerprint"] = real.fingerprint(m["clips"])
-    bp, py = results(m, 0.9), results(m, 0.8, params={})
-    g = real.evaluate_gate(m, bp, py, APP, db_of(m, **{target["id"]: dict(CONTAMINATED)}))
-    assert g["verdict"] == "INCOMPLETE" and "B" in g["conditions_below_minimum"]
-    assert g["excluded_holdout"] == [
-        {
-            "id": target["id"],
-            "reasons": ["contaminated: " + CONTAMINATED["reason"]],
-        }
-    ]
-    assert target["id"] not in g["eligible_holdout"] and g["integrity_problems"] == []
+    assert r.status_code == 201, r.text
+    return r.json()["id"]
 
 
-def test_manifest_or_results_claiming_clean_cannot_override_the_database():
-    m = full_manifest()  # manifest (and results) say every recording is clean
-    target = next(c for c in m["clips"] if c["split"] == "holdout")
-    bp, py = results(m, 0.95), results(m, 0.8, params={})
-    g = real.evaluate_gate(m, bp, py, APP, db_of(m, **{target["id"]: dict(CONTAMINATED)}))
-    assert g["verdict"] == "INCOMPLETE"
-    assert any("differs from the app database" in p for p in g["integrity_problems"])
-    assert any("do not cover exactly the eligible holdout" in p for p in g["integrity_problems"])
-
-
-def test_missing_or_untracked_provenance_fails_closed():
-    m = full_manifest()
-    target = next(c for c in m["clips"] if c["split"] == "holdout")
-    for db_value in (None, {"tracked": False, "contaminated": False, "reason": None}):
-        g = real.evaluate_gate(
-            m,
-            results(m, 0.95),
-            results(m, 0.8, params={}),
-            APP,
-            db_of(m, **{target["id"]: db_value}),
-        )
-        assert g["verdict"] == "INCOMPLETE"
-        assert any("fail closed" in r for e in g["excluded_holdout"] for r in e["reasons"])
-    # A database without the session at all (e.g. wiped) also fails closed.
-    g = real.evaluate_gate(m, results(m, 0.95), results(m, 0.8, params={}), APP, {})
-    assert g["verdict"] == "INCOMPLETE" and len(g["excluded_holdout"]) == 9
-
-
-def test_dev_recordings_may_be_contaminated():
-    m = full_manifest()
-    dev = [c for c in m["clips"] if c["split"] == "dev"]
-    for c in dev:
-        c["tags"]["provenance"] = dict(CONTAMINATED)
-    m["fingerprint"] = real.fingerprint(m["clips"])
-    db = db_of(m, **{c["id"]: dict(CONTAMINATED) for c in dev})
-    g = real.evaluate_gate(m, results(m, 0.9), results(m, 0.8, params={}), APP, db)
-    assert g["verdict"] == "PASS" and g["excluded_holdout"] == []
-
-
-def test_prepare_takes_provenance_from_the_database_not_the_reference(
-    tmp_path, data_dir, monkeypatch
-):
-    from jamrecall import provenance, store
-    from jamrecall.db import transaction
-
-    monkeypatch.setattr(real, "CORPUS", tmp_path / "corpus")
-    d, sids = data_dir
-    with transaction(d / "jamrecall.sqlite3") as conn:
-        provenance.contaminate(conn, store.get_session(conn, sids[1][0]), "test contamination")
-    forged = {"tracked": True, "contaminated": False, "reason": None, "holdout_eligible": True}
-    write_refs(
-        tmp_path / "refs",
-        {
-            "clean": ref(session_id=sids[0][0], audio_sha256=sids[0][1], split="holdout"),
-            "dirty": ref(
-                session_id=sids[1][0], audio_sha256=sids[1][1], split="holdout", provenance=forged
-            ),
-        },
-    )
-    assert real.prepare(Namespace(tag="t", data_dir=str(d), refs=str(tmp_path / "refs"))) == 0
-    m = json.loads((tmp_path / "corpus" / "t" / "manifest.json").read_text())
-    tags = {c["id"]: c["tags"]["provenance"] for c in m["clips"]}
-    assert tags["clean"] == {"tracked": True, "contaminated": False, "reason": None}
-    assert tags["dirty"]["contaminated"] is True and tags["dirty"]["reason"] == "test contamination"
-    db = real.read_db_provenance(d / "jamrecall.sqlite3", m["clips"])
-    assert real.holdout_exclusion(
-        m["clips"][1] if m["clips"][1]["id"] == "dirty" else m["clips"][0], db[sids[1][0]]
-    )
-
-
-def test_old_schema_database_fails_closed(tmp_path):
-    import sqlite3
-
-    db = tmp_path / "old.sqlite3"
-    conn = sqlite3.connect(db)
-    conn.execute("CREATE TABLE sessions (id TEXT, audio_sha256 TEXT)")
-    conn.execute("INSERT INTO sessions VALUES ('s', 'h')")
-    conn.commit()
-    conn.close()
-    assert real.read_db_provenance(db, [{"session_id": "s"}]) == {"s": None}
-    assert real.read_db_provenance(tmp_path / "missing.sqlite3", [{"session_id": "s"}]) == {
-        "s": None
+def finalize(c, sid, split, midi=60, seed="blank"):
+    body = {
+        "notes": [{"start_seconds": 0.0, "end_seconds": 1.0, "midi_pitch": midi}],
+        "seed": seed,
+        "split": split,
+        "condition": "A",
+        "annotator": "t",
     }
+    assert c.put(f"/api/sessions/{sid}/annotation", json=body).status_code == 200
+    assert c.post(f"/api/sessions/{sid}/annotation/finalize").status_code == 200
+
+
+def test_dataset_comes_from_the_database_with_app_provenance(app, tmp_path):
+    c, var = app
+    clean = recorded(c, 57)
+    finalize(c, clean, "holdout")
+    c.post(f"/api/sessions/{clean}/transcriptions")  # after finalization: stays eligible
+    dirty = recorded(c, 60)
+    c.post(f"/api/sessions/{dirty}/transcriptions?confirm_disqualify=true")
+    finalize(c, dirty, "holdout")
+    dev = recorded(c, 62)
+    c.post(f"/api/sessions/{dev}/transcriptions?confirm_disqualify=true")
+    finalize(c, dev, "dev")
+    imported = c.post(
+        "/api/sessions",
+        files={"audio": ("r", webm(pluck(2.0, 64)), "audio/webm")},
+        data={"client_mime": "audio/webm"},
+    ).json()["id"]  # no capture metadata
+    finalize(c, imported, "holdout")
+
+    clips, problems = real.load_dataset(var)
+    assert problems == []
+    by = {x["session_id"]: x for x in clips}
+    assert real.holdout_exclusion(by[clean]) == []
+    assert "before the reference annotation was finalized" in real.holdout_exclusion(by[dirty])[0]
+    assert real.holdout_exclusion(by[dev]) == []
+    assert "not recorded with the in-app recorder" in real.holdout_exclusion(by[imported])[0]
+
+    # Exported reference files are not inputs: editing them changes nothing.
+    exported = c.get(f"/api/sessions/{dirty}/export").content
+    assert exported  # (would be edited by hand; load_dataset never reads exports)
+    clips2, _ = real.load_dataset(var)
+    assert real.fingerprint(clips2) == real.fingerprint(clips)
+
+
+def test_tampering_with_audio_or_database_fails_closed(app, tmp_path):
+    c, var = app
+    sid = recorded(c, 57)
+    finalize(c, sid, "holdout")
+    # Database-level edits that would launder provenance are refused by triggers.
+    db = sqlite3.connect(var / "jamrecall.sqlite3", isolation_level=None)
+    for sql in (
+        "UPDATE sessions SET provenance_origin = 'imported'",
+        "UPDATE annotations SET split = 'dev'",
+        "UPDATE annotation_notes SET midi_pitch = 61",
+    ):
+        with pytest.raises(sqlite3.DatabaseError):
+            db.execute(sql)
+    db.close()
+    # Replacing the audio file on disk is detected.
+    path = next((var / "media" / "sessions" / sid).glob("original.*"))
+    path.write_bytes(webm(pluck(2.0, 59, seed=9)))
+    clips, problems = real.load_dataset(var)
+    assert clips == [] and "does not match its stored sha256" in problems[0]
+
+
+def test_missing_or_old_database_fails_closed(tmp_path):
+    assert real.load_dataset(tmp_path)[1] == [
+        f"no app database at {tmp_path / 'jamrecall.sqlite3'}"
+    ]
+    db = sqlite3.connect(tmp_path / "jamrecall.sqlite3")
+    db.execute("CREATE TABLE sessions (id TEXT)")
+    db.close()
+    clips, problems = real.load_dataset(tmp_path)
+    assert clips == [] and "predates contamination tracking" in problems[0]
+
+
+def test_run_validation_end_to_end(app):
+    """Both real engines run in-process on the app's decoded audio; small set -> INCOMPLETE."""
+    c, var = app
+    hold = recorded(c, 57, seed=1)
+    finalize(c, hold, "holdout", midi=57)
+    dev = recorded(c, 64, seed=2)
+    finalize(c, dev, "dev", midi=64)
+    report = real.run_validation(var)
+    assert report["verdict"] == "INCOMPLETE"
+    assert report["eligible_holdout"] == [f"A-holdout-{hold[:8]}"]
+    for engine in ("basic-pitch", "pyin"):
+        assert "holdout/A" in report["results"][engine]["summary"]
+    assert report["results"]["basic-pitch"]["params"] == {
+        k: real.app_bp_params()[k] for k in real.BENCH_BP_KEYS
+    }
+    assert report["results"]["basic-pitch"]["summary"]["holdout/A"]["onset"]["f1"] == 1.0

@@ -6,9 +6,16 @@ it could have influenced its reference annotation:
   any generation or viewing, so it is the earliest point exposure can happen); or
 - a finalized annotation is reopened after a transcription was requested (later edits could be
   informed by the model); or
-- its audio is byte-identical to audio that was contaminated before (even if that session was
-  deleted); or
+- its audio (container bytes or decoded samples) was uploaded before, in any session, even a
+  deleted one: a re-upload is never an independent take (`seen_audio`); or
 - it was transcribed before tracking existed (migration 4 marks it "uncertain").
+
+Additionally only recordings made with the in-app recorder and tracked from creation
+(`provenance_origin = 'recorded'`) can be eligible; imported files and recordings that predate
+tracking cannot. SQLite triggers (migration 5) enforce the ordering invariants: a transcription row
+cannot be inserted before exposure (and, if unfinalized, contamination) is recorded, and an exposed
+finalized reference cannot be reopened before contamination is recorded. All checks run inside
+BEGIN IMMEDIATE transactions with freshly read state.
 
 The fields are write-once (enforced by SQLite triggers) and every relevant action is appended to
 `provenance_events`. Changing split or metadata, deleting transcription rows, re-exporting or
@@ -31,6 +38,8 @@ REASON_REQUEST_BEFORE_FINAL = (
 )
 REASON_REOPEN_AFTER_EXPOSURE = "reference annotation reopened after model output was requested"
 REASON_SAME_AUDIO = "audio identical to a previously contaminated recording"
+REASON_DUPLICATE = "duplicate of audio uploaded before"
+RECORDER_MIMES = ("audio/webm", "audio/ogg", "audio/mp4")
 
 
 class WouldContaminate(Exception):
@@ -80,49 +89,64 @@ def _annotation_final(conn: sqlite3.Connection, session_id: str) -> bool:
     return row is not None and row["status"] == "final"
 
 
-def on_session_created(conn: sqlite3.Connection, session: dict[str, Any]) -> None:
+def on_session_created(
+    conn: sqlite3.Connection, session: dict[str, Any], pcm_sha256: str, recorded: bool
+) -> None:
+    """Start tracking at creation. `recorded`: captured by the in-app recorder (browser path)."""
+    origin = "recorded" if recorded and session["audio_mime"] in RECORDER_MIMES else "imported"
     conn.execute(
-        "UPDATE sessions SET provenance_tracked_since = ? WHERE id = ?",
-        (store.now_iso(), session["id"]),
+        "UPDATE sessions SET provenance_tracked_since = ?, provenance_origin = ?, pcm_sha256 = ? "
+        "WHERE id = ?",
+        (store.now_iso(), origin, pcm_sha256, session["id"]),
     )
     session = _reload(conn, session["id"])
-    log(conn, session, "created")
+    log(conn, session, "created", {"origin": origin, "pcm_sha256": pcm_sha256})
+    seen = conn.execute(
+        "SELECT first_session_id, kind FROM seen_audio WHERE hash IN (?, ?)",
+        (session["audio_sha256"], pcm_sha256),
+    ).fetchone()
     prior = conn.execute(
         "SELECT reason FROM contaminated_audio WHERE audio_sha256 = ?", (session["audio_sha256"],)
     ).fetchone()
     if prior is not None:
         contaminate(conn, session, f"{REASON_SAME_AUDIO} ({prior['reason']})")
+    elif seen is not None:
+        contaminate(conn, session, f"{REASON_DUPLICATE} (session {seen['first_session_id']})")
+    for h, kind in ((session["audio_sha256"], "container"), (pcm_sha256, "pcm")):
+        conn.execute(
+            "INSERT OR IGNORE INTO seen_audio (hash, kind, first_session_id, first_at) "
+            "VALUES (?, ?, ?, ?)",
+            (h, kind, session["id"], store.now_iso()),
+        )
 
 
 def would_contaminate_on_transcribe(conn: sqlite3.Connection, session: dict[str, Any]) -> bool:
     return session.get("contaminated_at") is None and not _annotation_final(conn, session["id"])
 
 
-def on_transcription_requested(
-    conn: sqlite3.Connection, session: dict[str, Any], transcription_id: str, confirmed: bool
-) -> None:
-    """Call before creating the transcription row. Raises WouldContaminate unless confirmed."""
-    final = _annotation_final(conn, session["id"])
+def on_transcription_requested(conn: sqlite3.Connection, session_id: str, confirmed: bool) -> None:
+    """Call BEFORE inserting the transcription row (a trigger enforces this ordering).
+
+    Raises WouldContaminate if the recording is still eligible, has no finalized reference, and
+    the disqualification was not confirmed.
+    """
+    session = _reload(conn, session_id)  # fresh state inside the serialized transaction
+    final = _annotation_final(conn, session_id)
     disqualifies = session.get("contaminated_at") is None and not final
     if disqualifies and not confirmed:
         raise WouldContaminate(REASON_REQUEST_BEFORE_FINAL)
     if session.get("model_exposed_at") is None:
         conn.execute(
-            "UPDATE sessions SET model_exposed_at = ? WHERE id = ?",
-            (store.now_iso(), session["id"]),
+            "UPDATE sessions SET model_exposed_at = ? WHERE id = ?", (store.now_iso(), session_id)
         )
     log(
         conn,
         session,
         "transcription_requested",
-        {
-            "transcription_id": transcription_id,
-            "annotation_final": final,
-            "confirmed_disqualification": bool(disqualifies),
-        },
+        {"annotation_final": final, "confirmed_disqualification": bool(disqualifies)},
     )
     if disqualifies:
-        contaminate(conn, _reload(conn, session["id"]), REASON_REQUEST_BEFORE_FINAL)
+        contaminate(conn, _reload(conn, session_id), REASON_REQUEST_BEFORE_FINAL)
 
 
 def on_model_output_exposed(conn: sqlite3.Connection, session: dict[str, Any], via: str) -> None:
@@ -139,7 +163,9 @@ def would_contaminate_on_reopen(session: dict[str, Any]) -> bool:
     return session.get("contaminated_at") is None and session.get("model_exposed_at") is not None
 
 
-def on_reopen(conn: sqlite3.Connection, session: dict[str, Any], confirmed: bool) -> None:
+def on_reopen(conn: sqlite3.Connection, session_id: str, confirmed: bool) -> None:
+    """Call BEFORE reopening (a trigger enforces this ordering)."""
+    session = _reload(conn, session_id)  # fresh state inside the serialized transaction
     disqualifies = would_contaminate_on_reopen(session)
     if disqualifies and not confirmed:
         raise WouldContaminate(REASON_REOPEN_AFTER_EXPOSURE)
@@ -155,15 +181,19 @@ def on_finalized(conn: sqlite3.Connection, session: dict[str, Any]) -> None:
 def status(session: dict[str, Any]) -> dict[str, Any]:
     tracked = session.get("provenance_tracked_since")
     contaminated = session.get("contaminated_at")
-    if tracked is None:
-        eligible, why = False, "provenance not tracked"
+    origin = session.get("provenance_origin")
+    if tracked is None or origin is None or origin == "pre-tracking":
+        eligible, why = False, "provenance not tracked from creation"
     elif contaminated is not None:
         eligible, why = False, session.get("contamination_reason") or "contaminated"
+    elif origin != "recorded":
+        eligible, why = False, "not recorded with the in-app recorder"
     else:
         eligible, why = True, None
     return {
         "version": PROVENANCE_VERSION,
         "tracked_since": tracked,
+        "origin": origin,
         "model_exposed_at": session.get("model_exposed_at"),
         "contaminated_at": contaminated,
         "contamination_reason": session.get("contamination_reason"),

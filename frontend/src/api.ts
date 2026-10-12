@@ -18,6 +18,7 @@ export interface Session {
 export interface Provenance {
   version: number;
   tracked_since: string | null;
+  origin: "recorded" | "imported" | "pre-tracking" | null;
   model_exposed_at: string | null;
   contaminated_at: string | null;
   contamination_reason: string | null;

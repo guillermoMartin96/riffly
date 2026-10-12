@@ -77,10 +77,15 @@ def check_numbers() -> None:
 
 
 def check_gate_commands() -> None:
-    """The gate must read the app database (the provenance source); flag commands without it."""
+    """Documented gate commands must exist and read the app database (the provenance source)."""
     for doc in DOCS:
         for ln in doc.read_text().splitlines():
-            if "jamrecall_bench.real gate" in ln and "--data-dir" not in ln:
+            for old in ("real prepare", "real score", "real gate"):
+                if f"jamrecall_bench.{old}" in ln:
+                    problems.append(
+                        f"{doc.relative_to(ROOT)}: removed command `{old}` (use `real validate`)"
+                    )
+            if "jamrecall_bench.real validate" in ln and "--data-dir" not in ln:
                 problems.append(
                     f"{doc.relative_to(ROOT)}: gate command without --data-dir: {ln.strip()}"
                 )

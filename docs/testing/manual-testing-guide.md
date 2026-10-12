@@ -25,7 +25,7 @@ git pull
 | Original recordings (byte-for-byte) | `var/media/sessions/<session id>/original.webm` |
 | Sessions, transcription runs, annotations, riffs | `var/jamrecall.sqlite3` |
 | Exports you download | your browser's Downloads folder (`jamrecall-<id>.zip`) |
-| Reference files for the validation gate | `bench/real/references/*.json` (created by `export-references`, below) |
+| Reference annotations and holdout provenance | in the database above. The validation gate reads them from there; `bench/real/references/*.json` (from `export-references`) are archival copies only |
 
 `var/` is in `.gitignore`, so recordings are never committed. Reference JSON files (notes and metadata,
 no audio) are meant to be committed. Use `JAMRECALL_DATA_DIR=/some/path ./scripts/dev.sh` to keep a
@@ -189,35 +189,28 @@ In each case, use the take as dev (or delete it) and record a replacement holdou
 badge before finalizing a holdout take: it must say **Holdout-eligible**.
 
 ### 7.5 Changing a finalized reference
-- **Reopen for edits** keeps the split locked and increments the reference's revision. The revision and
-  the notes are part of the dataset fingerprint, so any change makes earlier scores stale, and the gate
-  reports INCOMPLETE until everything is re-scored.
-- Before any holdout scoring: correcting a holdout reference is allowed (for example, a typo found on
-  re-listening), **provided you have not seen model output for that take**. Say why in the Notes field.
-- After holdout scoring has started: do not edit holdout references. If one is genuinely wrong, tell me.
-  The change needs a new decision request, recorded with its reason and the before/after scores,
-  because edits made after seeing results bias the evaluation.
-- If a holdout take was transcribed after finalization, **Reopen** warns that it would disqualify it.
-  Continuing marks it contaminated permanently, and the gate will exclude it.
+- **Reopen for edits** keeps the split locked and increments the reference's revision. A finalized
+  reference cannot change in any other way.
+- Before any validation run: correcting a holdout reference is allowed (for example, a typo found on
+  re-listening), **provided no model output was requested for that take**. If it was, **Reopen**
+  warns that it would disqualify the take. Say why you're correcting it in the Notes field.
+- After holdout validation has been run: do not edit holdout references. If one is genuinely wrong,
+  tell me. The change needs a new decision request, recorded with its reason and the before/after
+  scores, because edits made after seeing results bias the evaluation.
 - Do not wipe `var/` while it holds the validation dataset: that erases provenance.
 
 ### 7.6 When the takes are done
 Tell me the dataset is ready and I'll run it, or run it yourself:
 ```sh
-backend/.venv/bin/python -m jamrecall.manage export-references --out bench/real/references
 cd bench
-../backend/.venv/bin/python -m jamrecall_bench.real prepare --data-dir ../var
-.venv-bp/bin/python   -m jamrecall_bench.real score basic-pitch
-.venv-pyin/bin/python -m jamrecall_bench.real score pyin
-.venv-pyin/bin/python -m jamrecall_bench.real gate --data-dir ../var
+../backend/.venv/bin/python -m jamrecall_bench.real validate --data-dir ../var
 ```
-- `export-references` writes only **finalized** references.
-- `prepare` refuses the whole set (and writes no manifest) if any reference is unfinalized, has no
-  seed, duplicates another take, has notes past the end of its audio, or doesn't match its audio's
-  sha256. It then fingerprints the dataset.
-- `score` runs each engine on exactly that fingerprinted set. Basic Pitch uses the app's own
-  parameters.
-- `gate` prints **PASS**, **FAIL** or **INCOMPLETE** (missing takes or notes, stale or mismatched
-  results) and writes `bench/results/real-gate.json`.
-- The venvs come from `sh bench/install-basicpitch.sh` and `sh bench/install-pyin.sh`. Pass/fail
-  criteria: protocol, "Pass criteria".
+- `validate` reads every **finalized** reference and its provenance directly from the app database.
+  It checks each original recording against the hashes stored at upload, decodes it with the app's
+  own decoder, and runs Basic Pitch (with the app's parameters) and pYIN on it.
+- It prints **PASS**, **FAIL** or **INCOMPLETE**, lists every excluded holdout take with its reason,
+  shows the scores per condition, and writes `bench/results/real-validation.json`.
+- Exported or hand-edited files are not inputs, so they can't change the result.
+- Optional archival copy of the references (not used by the gate):
+  `backend/.venv/bin/python -m jamrecall.manage export-references --out bench/real/references`.
+- Pass/fail criteria: protocol, "Pass criteria".

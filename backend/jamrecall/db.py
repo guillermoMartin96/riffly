@@ -152,6 +152,70 @@ MIGRATIONS: list[str] = [
         SELECT RAISE(ABORT, 'contaminated audio records are permanent');
     END;
     """,
+    # 5: contamination guard hardening (Codex review of the guard, 2026-10-12)
+    """
+    -- How the recording entered: 'recorded' (in-app recorder, tracked from creation),
+    -- 'imported' (any other upload), 'pre-tracking' (existed before migration 4). Only
+    -- 'recorded' can be holdout-eligible. Decoded-audio hash catches container re-wraps.
+    ALTER TABLE sessions ADD COLUMN provenance_origin TEXT;
+    ALTER TABLE sessions ADD COLUMN pcm_sha256 TEXT;
+    UPDATE sessions SET provenance_origin = CASE
+        WHEN EXISTS (SELECT 1 FROM provenance_events e
+                     WHERE e.session_id = sessions.id AND e.kind = 'created')
+             AND capture_info IS NOT NULL AND audio_mime IN ('audio/webm','audio/ogg','audio/mp4')
+        THEN 'recorded'
+        WHEN EXISTS (SELECT 1 FROM provenance_events e
+                     WHERE e.session_id = sessions.id AND e.kind = 'created')
+        THEN 'imported'
+        ELSE 'pre-tracking' END;
+    -- Every audio identity ever uploaded (container hash and decoded-audio hash). Permanent:
+    -- a later upload of the same audio is never an independent take.
+    CREATE TABLE seen_audio (
+        hash TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        first_session_id TEXT NOT NULL,
+        first_at TEXT NOT NULL
+    );
+    INSERT OR IGNORE INTO seen_audio
+        SELECT audio_sha256, 'container', id, created_at FROM sessions;
+    CREATE TRIGGER seen_audio_no_update BEFORE UPDATE ON seen_audio
+    BEGIN SELECT RAISE(ABORT, 'seen audio records are permanent'); END;
+    CREATE TRIGGER seen_audio_no_delete BEFORE DELETE ON seen_audio
+    BEGIN SELECT RAISE(ABORT, 'seen audio records are permanent'); END;
+    CREATE TRIGGER sessions_origin_write_once BEFORE UPDATE ON sessions
+    WHEN (OLD.provenance_origin IS NOT NULL
+          AND NEW.provenance_origin IS NOT OLD.provenance_origin)
+      OR (OLD.pcm_sha256 IS NOT NULL AND NEW.pcm_sha256 IS NOT OLD.pcm_sha256)
+    BEGIN SELECT RAISE(ABORT, 'provenance is write-once'); END;
+    -- Invariant: a transcription row can only exist once exposure is recorded, and, if the
+    -- reference is not finalized, once the recording is marked contaminated.
+    CREATE TRIGGER transcriptions_require_provenance BEFORE INSERT ON transcriptions
+    WHEN (SELECT model_exposed_at FROM sessions WHERE id = NEW.session_id) IS NULL
+      OR (NOT EXISTS (SELECT 1 FROM annotations a
+                      WHERE a.session_id = NEW.session_id AND a.status = 'final')
+          AND (SELECT contaminated_at FROM sessions WHERE id = NEW.session_id) IS NULL)
+    BEGIN SELECT RAISE(ABORT, 'record exposure/contamination before creating a transcription'); END;
+    -- Invariant: a finalized reference can only be reopened after exposure if contamination
+    -- has been recorded.
+    CREATE TRIGGER annotations_reopen_requires_contamination BEFORE UPDATE OF status ON annotations
+    WHEN OLD.status = 'final' AND NEW.status != 'final'
+      AND (SELECT model_exposed_at FROM sessions WHERE id = OLD.session_id) IS NOT NULL
+      AND (SELECT contaminated_at FROM sessions WHERE id = OLD.session_id) IS NULL
+    BEGIN SELECT RAISE(ABORT, 'record contamination before reopening an exposed reference'); END;
+    -- Invariant: a finalized reference cannot change without reopening it first.
+    CREATE TRIGGER annotations_final_immutable BEFORE UPDATE ON annotations
+    WHEN OLD.status = 'final' AND NEW.status = 'final'
+      AND (NEW.split IS NOT OLD.split OR NEW.condition IS NOT OLD.condition
+           OR NEW.method IS NOT OLD.method OR NEW.seed IS NOT OLD.seed
+           OR NEW.revision IS NOT OLD.revision OR NEW.finalized_at IS NOT OLD.finalized_at)
+    BEGIN SELECT RAISE(ABORT, 'finalized reference is immutable; reopen it first'); END;
+    CREATE TRIGGER annotation_notes_final_no_insert BEFORE INSERT ON annotation_notes
+    WHEN (SELECT status FROM annotations WHERE id = NEW.annotation_id) = 'final'
+    BEGIN SELECT RAISE(ABORT, 'finalized reference is immutable; reopen it first'); END;
+    CREATE TRIGGER annotation_notes_final_no_update BEFORE UPDATE ON annotation_notes
+    WHEN (SELECT status FROM annotations WHERE id = OLD.annotation_id) = 'final'
+    BEGIN SELECT RAISE(ABORT, 'finalized reference is immutable; reopen it first'); END;
+    """,
 ]
 
 
@@ -164,10 +228,18 @@ def connect(db_path: Path) -> sqlite3.Connection:
 
 @contextmanager
 def transaction(db_path: Path) -> Iterator[sqlite3.Connection]:
+    """One serialized transaction (BEGIN IMMEDIATE): reads and the writes based on them cannot
+    interleave with another request's writes (no check-then-act races)."""
     conn = connect(db_path)
+    conn.isolation_level = None  # explicit transaction control
     try:
-        with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
             yield conn
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+        conn.execute("COMMIT")
     finally:
         conn.close()
 

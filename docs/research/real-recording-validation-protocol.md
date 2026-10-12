@@ -33,48 +33,39 @@ suppression and auto-gain. The original upload stays in `var/`. Reference files 
 session id **and sha256**, and scoring refuses audio whose hash differs.
 
 ## Reference notes (ground truth)
-One JSON file per recording in `bench/real/references/<name>.json`:
+References are made in JamRecall's **Reference annotation** panel and live in the app database
+(`annotations`, `annotation_notes`). **The database is the only input the gate uses**: the gate
+reads every finalized reference directly from it. The exported files (`reference.json` in a session
+export, or `python -m jamrecall.manage export-references --out bench/real/references`) are archival
+copies in this format:
 
 ```json
 {"format": "jamrecall-reference-v1", "session_id": "…", "audio_sha256": "…",
  "status": "final", "seed": "blank", "revision": 1,
  "split": "dev|holdout", "condition": "A|B|C|D", "method": "manual|score",
- "annotator": "…", "instrument": "…", "notes_text": "…",
+ "annotator": "…", "instrument": "…", "notes_text": "…", "provenance": {"…": "…"},
  "notes": [{"start": 0.512, "end": 0.903, "midi": 64, "technique": null}]}
 ```
-`status` (must be `final`) and `seed` (`blank` or `transcription:<id>:<engine>@<version>`) are
-**required**; nothing is inferred. Each recording (session id and audio hash) may appear only once
-across all references. Notes must lie within the recording. `prepare` writes no manifest if any
-reference fails these checks.
-
-References are made in JamRecall's **Reference annotation** panel (or as JSON in the same format) and
-exported with `python -m jamrecall.manage export-references --out bench/real/references`. Only
-**finalized** annotations are exported or scored.
+Editing an exported file has no effect on validation.
 
 ### Independence of holdout references (DR-0004, approved 2026-10-09)
 - **Holdout** references start **blank**, and the annotator has **no exposure to model-generated notes**
-  for that take before finalizing: the take is not transcribed (no **Transcribe**, no viewing of its
-  transcriptions or export) until its reference is finalized.
+  for that take before finalizing: the take is not transcribed until its reference is finalized.
 - **Dev** and exploratory references may be started from model output (`seed` =
   `transcription:<id>:<engine>@<version>`).
-- Enforcement:
-  - The seed is stored with every annotation, and the UI warns when a holdout reference is
-    model-seeded.
-  - `prepare` requires an explicit seed; `score` and `gate` exclude model-seeded holdout references
-    from scoring and from the minimum counts.
-  - **Contamination guard (approved 2026-10-12)**: the app records, write-once, whether model output
-    was requested for a recording before its reference was finalized (see "Contamination tracking"
-    below). Such recordings are permanently ineligible as holdout.
+- Enforcement: the seed is stored with every annotation; the UI warns when a holdout reference is
+  model-seeded; the gate excludes model-seeded holdout references. The contamination guard below
+  covers exposure.
 - **Finalization**: requires split, condition and annotator, plus at least one note, and locks the
-  split permanently.
-- **Changes after finalization**: **Reopen** keeps the split locked and increments the revision. Both
-  are in the dataset fingerprint, so earlier scores become stale (gate INCOMPLETE until re-scored).
-  - Before any holdout scoring, a correction is allowed if the annotator has not seen model output
-    for the take; the reason goes in the Notes field.
-  - After holdout scoring has started, holdout references are frozen. A correction needs a new
+  split permanently. A finalized reference cannot be changed without **Reopen**; database triggers
+  enforce this.
+- **Changes after finalization**: **Reopen** keeps the split locked and increments the revision.
+  - Reopening after model output was requested for the take contaminates it permanently (the app
+    warns first).
+  - Before any holdout validation run, a correction to an unexposed holdout reference is allowed;
+    the reason goes in the Notes field.
+  - After holdout validation has been run, holdout references are frozen. A correction needs a new
     decision request recording the reason and the before/after scores.
-  - A holdout reference reopened after its take was transcribed is contaminated: it is excluded
-    (delete the take) and replaced.
 - **manual**: annotate each played note on the original audio with the in-app editor (zoom the timeline,
   set the playhead, listen to single notes, nudge in 10 ms steps); external tools such as Sonic
   Visualiser are also fine. Onset = start of the attack transient; pitch = fretted note
@@ -88,21 +79,30 @@ Techniques: notes played with a bend, slide, hammer-on/pull-off, vibrato or harm
 tag (pitch = the note at its onset). They are included in the main score and also reported separately.
 
 ## Contamination tracking (DR-0004 guard, approved 2026-10-12)
-The app database is the only source of truth for holdout eligibility.
+The app database is the only source of truth for holdout eligibility (`jamrecall.provenance`).
+- **Eligible** only when all of these hold:
+  - recorded with the in-app recorder (browser capture metadata, recorder container) and tracked
+    from the moment it was created (`provenance_origin = recorded`);
+  - never contaminated.
+
+  Imported files and recordings that existed before tracking (*pre-tracking*) are never eligible.
 - **Contaminated (permanent)** when any of these happens:
   - a transcription is *requested* while the recording has no finalized annotation (requesting is
-    the earliest point at which model output can exist or be seen; failed or cancelled-later runs
-    count too);
+    the earliest point at which model output can exist or be seen; failed runs count too);
   - a finalized annotation is *reopened* after a transcription was requested;
-  - the recording's audio is byte-identical to audio contaminated earlier (kept in
-    `contaminated_audio`, even after the original session is deleted);
-  - it was transcribed before tracking existed (marked *uncertain*).
-- **Write-once**:
-  - `contaminated_at`, `contamination_reason`, `model_exposed_at` and `provenance_tracked_since` cannot
-    be cleared or rewritten; SQLite triggers reject it;
-  - `provenance_events` is append-only, and `contaminated_audio` rows are permanent;
-  - changing split or metadata, deleting transcription rows, re-exporting or restarting the app leaves
-    the state unchanged.
+  - its audio was uploaded before, in any session, even a deleted one. Both the container hash and
+    the decoded-audio hash are checked, so re-wrapping the same samples doesn't help
+    (`seen_audio`, `contaminated_audio`);
+  - it was transcribed before tracking existed (*uncertain*).
+- **Enforced in the database**, not just in application code:
+  - every request runs in a `BEGIN IMMEDIATE` transaction with freshly read state;
+  - SQLite triggers make the provenance fields write-once, `provenance_events` append-only, and
+    `seen_audio` / `contaminated_audio` permanent;
+  - triggers refuse a transcription row unless exposure (and, if unfinalized, contamination) was
+    recorded first, refuse reopening an exposed reference unless contamination was recorded first,
+    and refuse changes to a finalized reference or its notes;
+  - so concurrent requests, changing split or metadata, deleting transcription rows, re-exporting or
+    restarting the app cannot clear or skip it.
 - **User experience**:
   - Before an action that would disqualify a still-eligible recording (Transcribe before
     finalization, Reopen after model output was requested), the API refuses with
@@ -111,24 +111,24 @@ The app database is the only source of truth for holdout eligibility.
     is recorded. Transcription after finalization needs no confirmation.
   - Every recording shows a *Holdout-eligible* / *Not holdout-eligible (reason)* badge.
 - **Exports**: `metadata.json` contains `provenance` plus the full event log, and `reference.json`
-  contains an informational copy. Neither is trusted by the gate.
-- **Gate (fails closed)**:
-  - `prepare` copies provenance from the database into the manifest, ignoring anything a reference
-    file claims.
-  - `gate --data-dir` re-reads provenance from the database. A holdout recording is excluded, with
-    its reasons listed in `excluded_holdout`, when it is contaminated, untracked, has unknown
-    provenance, or is engine-seeded.
-  - Excluded recordings never count toward holdout scores, minimum takes or minimum notes.
-  - Unknown or untracked provenance on a holdout recording, a manifest that disagrees with the
-    database, or scores whose holdout set differs from the eligible set make the verdict INCOMPLETE.
+  contains an informational copy. The gate trusts neither.
+- **Gate (fails closed)**, in `validate`:
+  - Eligibility comes from the same `provenance.status` function the app uses, applied to the
+    database rows, plus dataset checks: engine seed; model output requested before the latest
+    finalization; the same audio (container or decoded) more than once in the dataset.
+  - Excluded holdout recordings are listed with their reasons in `excluded_holdout`. They never count
+    toward holdout scores, minimum takes or minimum notes.
+  - The verdict is INCOMPLETE when any of these is found: a missing or pre-tracking database; a
+    missing or changed original recording; decoded audio differing from the hash stored at upload;
+    reference notes past the end of the audio.
   - Dev and exploratory recordings may be contaminated without consequence.
 - **Limits**:
-  - The protection covers mistakes and manipulation through the app, reference files, manifest and
-    results. Someone deliberately editing the SQLite file with a separate tool (dropping the
-    triggers) is out of scope for a local single-user app.
-  - Wiping `var/` erases provenance; recordings re-uploaded afterwards start clean. Don't wipe a
-    data directory that holds a validation dataset.
-  - Audio played or viewed outside JamRecall cannot be tracked.
+  - The guard covers mistakes, concurrency and manipulation through the app, exported files and the
+    gate's inputs.
+  - Out of scope for a local single-user app: deliberately editing the SQLite file with a separate
+    tool (dropping the triggers), fabricating browser capture metadata for re-encoded audio
+    (different samples, so different hashes), and listening to model output outside JamRecall.
+  - Wiping `var/` erases provenance. Don't wipe a data directory that holds a validation dataset.
 
 ## Scoring (identical to the benchmark, `bench/jamrecall_bench/score.py`)
 - Matching: mir_eval, onset ±50 ms, pitch ±50 cents (exact MIDI note); offset-aware matching also
@@ -138,23 +138,18 @@ The app database is the only source of truth for holdout eligibility.
   - pitch correctness: exact-pitch rate and octave-error rate among onset-matched notes;
   - note-end quality: offset-aware F1 and median absolute end error;
   - latency: inference time and real-time factor per recording, plus end-to-end UI latency (E2E).
-- Engines: the app's Basic Pitch configuration (`BasicPitchAdapter`, parameters from
+- Engines: the app's Basic Pitch configuration (parameters from
   `backend/jamrecall/transcription/basic_pitch_params.json`, which equals the GuitarSet-dev selection in
   `bench/results/basic-pitch.json`), and the pYIN baseline (`bench/results/pyin.json`).
   Audio is decoded with the app's own decoder (`jamrecall.audio.decode_mono`, 22,050 Hz mono).
-- **No tuning on holdout.** Parameters may be re-tuned only on the real **dev** split
-  (`real.py score --tune-on-dev`). The gate only passes for the parameters the app actually runs
-  (`backend/jamrecall/transcription/basic_pitch_params.json`). A result tuned on dev therefore reports
-  INCOMPLETE until the new parameters are approved, integrated into the app, and the untuned app
-  configuration is re-scored.
-- **Dataset fingerprint**: `prepare` writes a manifest with a SHA-256 fingerprint covering every
-  recording's id, split, condition, seed, revision, reference notes, original-audio hash, analysis-audio
-  path and analysis-audio hash.
-  - `score` refuses analysis audio that changed after `prepare`, and records the fingerprint and the
-    recording ids it scored.
-  - The gate reports INCOMPLETE unless both engines' results carry exactly the current fingerprint and
-    ids, include a holdout summary for every gating condition, and Basic Pitch was scored with the
-    app's full parameter set (untuned).
+- **One process, no trusted intermediates**: `validate` reads the database, checks each original
+  recording against its stored container and decoded-audio hashes, runs both engines on that audio,
+  scores, and decides in a single run. It never reads score, manifest or reference files back. The
+  report records a dataset fingerprint (ids, splits, seeds, revisions, notes, audio hashes) for the
+  record.
+- **No tuning on holdout.** `tune-dev` reports the best parameters on the real **dev** split for
+  information only. `validate` always uses the app's own parameters, so adopting tuned parameters
+  requires a decision request and an app change, then a fresh validation.
 
 ## Pass criteria
 Gate (approved by the tech lead, 2026-10-09), on the **holdout** recordings of conditions A+B+C combined:
@@ -163,12 +158,13 @@ Gate (approved by the tech lead, 2026-10-09), on the **holdout** recordings of c
 3. for **each** gating condition A, B, C (provisionally approved 2026-10-09): Basic Pitch holdout onset
    F1 ≥ 0.70 **and** ≥ 90% of onset-matched notes have the correct MIDI pitch.
 
-Verdicts (`bench/results/real-gate.json`, exit code 0/1/2):
-- **PASS**: all checks 1–3 hold, with complete and untampered evidence.
+Verdicts (`bench/results/real-validation.json`, exit code 0/1/2):
+- **PASS**: all checks 1–3 hold, with complete, verified evidence.
 - **FAIL**: the evidence is complete, but at least one check fails. A failing gating condition is
   listed in `poor_conditions`.
-- **INCOMPLETE**: any gating condition is below its minimum recording or note count, a summary is
-  missing, or the evidence is stale or mismatched (`integrity_problems`). No conclusion is drawn.
+- **INCOMPLETE**: any gating condition is below its minimum recording or note count (after
+  exclusions), a summary is missing, or an integrity problem was found (`integrity_problems`). No
+  conclusion is drawn.
 
 Reported separately for every recording, condition and aggregate: precision, recall, pitch accuracy,
 and note-end accuracy (offset-aware F1 and median end error).
@@ -179,15 +175,14 @@ evidence and options, and do not loosen these thresholds.
 
 ## Procedure
 ```sh
-# 1. record in JamRecall; write references in bench/real/references/ (split fixed up front)
-# (from bench/)
-# 2. decode with the app's pipeline, verify hashes, build the "real" corpus
-../backend/.venv/bin/python -m jamrecall_bench.real prepare --data-dir ../var
-# 3. score both engines (frozen params); optional dev-only re-tuning
-.venv-bp/bin/python   -m jamrecall_bench.real score basic-pitch
-.venv-pyin/bin/python -m jamrecall_bench.real score pyin
-# 4. evaluate the gate -> bench/results/real-gate.json
-.venv-pyin/bin/python -m jamrecall_bench.real gate --data-dir ../var
+# 1. record and annotate in JamRecall (docs/testing/manual-testing-guide.md §7); finalize every take
+# 2. from bench/, with the backend venv (app decoder, Basic Pitch, librosa, mir_eval):
+../backend/.venv/bin/python -m jamrecall_bench.real validate --data-dir ../var
+#    -> prints the verdict, exclusions and scores; writes bench/results/real-validation.json
+# optional, informational only:
+../backend/.venv/bin/python -m jamrecall_bench.real tune-dev --data-dir ../var
+# archival copy of the finalized references (not used by the gate):
+../backend/.venv/bin/python -m jamrecall.manage export-references --out real/references
 ```
-Run the commands from `bench/`. `prepare` uses the backend venv so it decodes with the app's own code. The recordings
-themselves are not committed (privacy). The reference JSON files and result files are committed.
+The recordings are not committed (privacy). The validation report and archival reference JSON files
+are committed.

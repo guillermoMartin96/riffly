@@ -70,8 +70,8 @@ test('correct model output into a reference annotation, export it, then delete t
   expect(ann.seed).toMatch(/^transcription:.*:basic-pitch@0\.4\.0/);
   expect(ann.notes[0].midi_pitch).toBe(66);
   expect(ann.notes[0].start_seconds).toBeCloseTo(model.notes[1].start_seconds + 0.01, 3);
-  const added = ann.notes[ann.notes.length - 1];
-  expect(added.start_seconds).toBeCloseTo(4.6, 3);
+  const added = ann.notes.find((x: { start_seconds: number }) => Math.abs(x.start_seconds - 4.6) < 0.001);
+  expect(added).toBeTruthy();
   const modelAfter = await (await request.get(`/api/sessions/${sessionId}/transcriptions/latest`)).json();
   expect(modelAfter.notes).toEqual(model.notes);
   await page.screenshot({ path: 'test-results/evidence/20-annotation.png', fullPage: true });

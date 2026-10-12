@@ -1,22 +1,19 @@
-"""Real-recording validation (docs/research/real-recording-validation-protocol.md).
+"""Real-recording validation gate (docs/research/real-recording-validation-protocol.md).
 
-From bench/:
-  ../backend/.venv/bin/python -m jamrecall_bench.real prepare --data-dir ../var
-  .venv-bp/bin/python   -m jamrecall_bench.real score basic-pitch [--tune-on-dev]
-  .venv-pyin/bin/python -m jamrecall_bench.real score pyin [--tune-on-dev]
-  .venv-pyin/bin/python -m jamrecall_bench.real gate --data-dir ../var
+Authoritative and self-contained: `validate` reads the finalized reference annotations and the
+contamination provenance **directly from the app database**, verifies each original recording
+against its stored hashes, decodes it with the app's own decoder, runs Basic Pitch (the app's
+parameters) and pYIN in the same process, scores both, applies the approved criteria, and writes a
+report. It never reads back intermediate files (reference JSON, manifests, score results), so
+editing such files cannot influence the verdict.
 
-Integrity rules (Codex interim review, 2026-10-09):
-- references must be explicitly finalized and state their seed; duplicates of a session or of
-  the same audio are refused; prepare writes no manifest unless every reference is valid;
-- the manifest carries a content fingerprint; score results record it and the clip ids they
-  scored; the gate refuses results that do not match the current manifest exactly;
-- Basic Pitch is scored with the app's own parameters (backend/.../basic_pitch_params.json); a
-  result tuned on dev, or scored with other parameters, cannot PASS.
+Run from bench/ with the backend venv (it has the app decoder, Basic Pitch, librosa and mir_eval):
+  ../backend/.venv/bin/python -m jamrecall_bench.real validate --data-dir ../var
+  ../backend/.venv/bin/python -m jamrecall_bench.real tune-dev --data-dir ../var  # informational
 
---tag NAME (default "real") selects bench/<tag>/references and the corpus/results names; any tag
-other than "real" (e.g. a tooling dry run) writes its outputs under .cache/ so they cannot be
-mistaken for validation evidence.
+Exit codes: 0 PASS, 1 FAIL, 2 INCOMPLETE. The report goes to bench/results/real-validation.json
+(or --out). Holdout eligibility comes from `jamrecall.provenance.status` (the same function the
+app uses) plus dataset-level checks; any unknown or inconsistent provenance fails closed.
 """
 
 from __future__ import annotations
@@ -26,11 +23,12 @@ import hashlib
 import json
 import sqlite3
 import sys
+import tempfile
 import time
 from collections import defaultdict
 from pathlib import Path
 
-from jamrecall_bench.common import BENCH, CACHE, CORPUS, RESULTS, read_json, write_json
+from jamrecall_bench.common import BENCH, RESULTS, read_json, write_json
 from jamrecall_bench.score import ONSET_TOL, aggregate, clip_stats
 
 GATING = ("A", "B", "C")
@@ -43,80 +41,11 @@ APP_PARAMS_FILE = (
     BENCH.parent / "backend" / "jamrecall" / "transcription" / "basic_pitch_params.json"
 )
 BENCH_BP_KEYS = ("onset_thresh", "frame_thresh", "min_note_ms", "mono")
+SR = 22050
 
 
 def is_engine_seed(seed: str | None) -> bool:
     return bool(seed) and seed.startswith("transcription:")
-
-
-PROVENANCE_COLUMNS = ("provenance_tracked_since", "contaminated_at", "contamination_reason")
-
-
-def read_db_provenance(db_path: Path, clips_or_refs: list[dict]) -> dict[str, dict | None]:
-    """Authoritative provenance per session id from the app database (None = unknown).
-
-    Unknown (missing database, old schema without tracking, unknown session) fails closed.
-    Audio recorded in `contaminated_audio` is contaminated even if its session row says otherwise.
-    """
-    out: dict[str, dict | None] = {}
-    sids = {(x.get("tags") or x).get("session_id") for x in clips_or_refs}
-    if not db_path.exists():
-        return {sid: None for sid in sids}
-    conn = sqlite3.connect(db_path)
-    try:
-        for sid in sids:
-            try:
-                row = conn.execute(
-                    f"SELECT {', '.join(PROVENANCE_COLUMNS)}, audio_sha256 FROM sessions "
-                    "WHERE id = ?",
-                    (sid,),
-                ).fetchone()
-                tomb = (
-                    conn.execute(
-                        "SELECT reason FROM contaminated_audio WHERE audio_sha256 = ?", (row[3],)
-                    ).fetchone()
-                    if row
-                    else None
-                )
-            except sqlite3.OperationalError:  # schema predates tracking
-                row, tomb = None, None
-            if row is None:
-                out[sid] = None
-                continue
-            tracked, contaminated_at, reason = row[0], row[1], row[2]
-            if contaminated_at is None and tomb is not None:
-                contaminated_at, reason = (
-                    "audio-record",
-                    f"audio previously contaminated: {tomb[0]}",
-                )
-            out[sid] = {
-                "tracked": tracked is not None,
-                "contaminated": contaminated_at is not None,
-                "reason": reason,
-            }
-    finally:
-        conn.close()
-    return out
-
-
-def holdout_exclusion(clip: dict, prov: dict | None) -> list[str]:
-    """Why a holdout clip may not count (empty list = eligible). Non-holdout clips: always []."""
-    if clip["split"] != "holdout":
-        return []
-    reasons = []
-    if is_engine_seed(clip["tags"].get("seed")):
-        reasons.append("reference seeded from engine output")
-    if prov is None:
-        reasons.append("provenance unknown (fail closed)")
-    elif not prov.get("tracked"):
-        reasons.append("provenance not tracked (fail closed)")
-    elif prov.get("contaminated"):
-        reasons.append(f"contaminated: {prov.get('reason')}")
-    return reasons
-
-
-def results_dir(tag: str) -> Path:
-    return RESULTS if tag == "real" else CACHE / "dryrun" / tag
 
 
 def app_bp_params() -> dict:
@@ -124,181 +53,156 @@ def app_bp_params() -> dict:
     return {k: v for k, v in data.items() if not k.startswith("_")}
 
 
-# --- references ---------------------------------------------------------------------------------
-
-
-def validate_reference(ref: dict, name: str) -> list[str]:
-    errs = []
-    for k in (
+def fingerprint(clips: list[dict]) -> str:
+    """Record of exactly what was evaluated (ids, splits, references, audio identities)."""
+    keys = (
+        "id",
         "session_id",
-        "audio_sha256",
         "split",
         "condition",
-        "method",
-        "status",
         "seed",
+        "revision",
+        "audio_sha256",
+        "pcm_sha256",
         "notes",
-    ):
-        if k not in ref:
-            errs.append(f"{name}: missing '{k}' (required; nothing is inferred)")
-    if ref.get("split") not in ("dev", "holdout"):
-        errs.append(f"{name}: split must be dev or holdout")
-    if ref.get("condition") not in MINIMUMS:
-        errs.append(f"{name}: condition must be one of {sorted(MINIMUMS)}")
-    if ref.get("method") not in ("manual", "score"):
-        errs.append(f"{name}: method must be manual or score")
-    if "status" in ref and ref["status"] != "final":
-        errs.append(f"{name}: annotation is not finalized (status {ref['status']!r})")
-    seed = ref.get("seed")
-    if "seed" in ref and not (seed == "blank" or is_engine_seed(seed)):
-        errs.append(f"{name}: seed must be 'blank' or 'transcription:...', got {seed!r}")
-    notes = ref.get("notes") or []
-    if not notes:
-        errs.append(f"{name}: no reference notes")
-    for i, n in enumerate(notes):
-        if not (0 <= n["start"] < n["end"]) or not (0 <= int(n["midi"]) <= 127):
-            errs.append(f"{name}: invalid note #{i} {n}")
-    return errs
-
-
-def check_duplicates(refs: list[tuple[str, dict]]) -> list[str]:
-    """Each recording may appear once: no repeated session ids or audio hashes, across splits."""
-    errs, seen_sid, seen_sha = [], {}, {}
-    for name, ref in refs:
-        for key, seen, label in (
-            (ref.get("session_id"), seen_sid, "session"),
-            (ref.get("audio_sha256"), seen_sha, "audio sha256"),
-        ):
-            if key in seen:
-                errs.append(f"{name}: duplicate {label} also used by {seen[key]}")
-            elif key:
-                seen[key] = name
-    return errs
-
-
-def file_sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def fingerprint(clips: list[dict]) -> str:
-    """Content hash of everything that determines a score (ids, splits, refs, audio)."""
-    canon = [
-        {
-            "id": c["id"],
-            "split": c["split"],
-            "notes": c["notes"],
-            "tags": c["tags"],
-            "audio": c["audio"],
-            "wav_sha256": c.get("wav_sha256"),
-        }
-        for c in sorted(clips, key=lambda c: c["id"])
-    ]
+    )
+    canon = [{k: c.get(k) for k in keys} for c in sorted(clips, key=lambda c: c["id"])]
     return hashlib.sha256(json.dumps(canon, sort_keys=True).encode()).hexdigest()
 
 
-def prepare(args) -> int:
-    import soundfile as sf
-    from jamrecall.audio import decode_mono  # the app's own decoder (backend venv)
-
-    data_dir = Path(args.data_dir).resolve()
-    refs_dir = BENCH / args.tag / "references" if args.refs is None else Path(args.refs)
-    manifest_path = CORPUS / args.tag / "manifest.json"
-    manifest_path.unlink(missing_ok=True)  # never leave a stale manifest behind
-    paths = sorted(refs_dir.glob("*.json"))
-    if not paths:
-        print(f"no reference files in {refs_dir}")
-        return 2
-    refs = [(p.stem, json.loads(p.read_text())) for p in paths]
-    errors = check_duplicates(refs)
-    conn = sqlite3.connect(data_dir / "jamrecall.sqlite3")
-    clips = []
-    for name, ref in refs:
-        errs = validate_reference(ref, name)
-        row = conn.execute(
-            "SELECT audio_path, audio_sha256 FROM sessions WHERE id = ?", (ref.get("session_id"),)
-        ).fetchone()
-        if row is None:
-            errs.append(f"{name}: session {ref.get('session_id')} not in {data_dir}")
-        if errs:
-            errors += errs
-            continue
-        audio_path = data_dir / row[0]
-        digest = hashlib.sha256(audio_path.read_bytes()).hexdigest()
-        if not (digest == row[1] == ref["audio_sha256"]):
-            errors.append(
-                f"{name}: sha256 mismatch (file {digest[:12]}, db {row[1][:12]}, "
-                f"reference {ref['audio_sha256'][:12]})"
-            )
-            continue
-        buf = decode_mono(audio_path, 22050)
-        late = [n for n in ref["notes"] if n["end"] > buf.duration_seconds + 0.001]
-        if late:
-            errors.append(
-                f"{name}: {len(late)} reference note(s) end after the recording "
-                f"({buf.duration_seconds:.3f} s)"
-            )
-            continue
-        out = CORPUS / args.tag / ref["split"] / f"{name}.wav"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        sf.write(out, buf.samples, buf.sample_rate, subtype="FLOAT")
-        clips.append(
-            {
-                "id": name,
-                "split": ref["split"],
-                "audio": str(out.relative_to(CORPUS)),
-                "wav_sha256": file_sha256(out),
-                "duration": round(buf.duration_seconds, 6),
-                "notes": [
-                    {
-                        "start": float(n["start"]),
-                        "end": float(n["end"]),
-                        "midi": int(n["midi"]),
-                        "technique": n.get("technique"),
-                    }
-                    for n in ref["notes"]
-                ],
-                "tags": {
-                    "condition": ref["condition"],
-                    "method": ref["method"],
-                    "seed": ref["seed"],
-                    "revision": ref.get("revision"),
-                    "session_id": ref["session_id"],
-                    "audio_sha256": digest,
-                },
-            }
-        )
-    if errors:
-        for e in errors:
-            print("ERROR", e)
-        print("No manifest written: fix the references above and run prepare again.")
-        return 1
-    db_prov = read_db_provenance(data_dir / "jamrecall.sqlite3", clips)
-    for clip in clips:
-        # From the app database only; anything a reference file claims is ignored.
-        clip["tags"]["provenance"] = db_prov[clip["tags"]["session_id"]]
-    write_json(
-        manifest_path, {"corpus": args.tag, "fingerprint": fingerprint(clips), "clips": clips}
-    )
-    for (cond, split), n in sorted(counts(clips).items()):
-        print(f"condition {cond} {split}: {n['recordings']} recordings, {n['notes']} notes")
-    return 0
+# --- dataset from the app database ----------------------------------------------------------------
 
 
-def counts(clips: list[dict], prov: dict[str, dict | None] | None = None) -> dict:
-    """Recordings/notes that count toward the minimums (ineligible holdout recordings excluded).
+def load_dataset(data_dir: Path) -> tuple[list[dict], list[str]]:
+    """Finalized references with audio and provenance, straight from the app database.
 
-    `prov` maps session id -> provenance (the gate passes the database's); default: manifest tags.
+    Returns (clips, problems). Problems are integrity failures that make the verdict INCOMPLETE.
     """
+    from jamrecall import provenance
+    from jamrecall.audio import decode_mono
+
+    db_path = data_dir / "jamrecall.sqlite3"
+    if not db_path.exists():
+        return [], [f"no app database at {db_path}"]
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    problems: list[str] = []
+    clips: list[dict] = []
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)")}
+        if not {"provenance_origin", "contaminated_at", "pcm_sha256"} <= cols:
+            return [], ["app database predates contamination tracking (start the app to migrate)"]
+        rows = conn.execute(
+            """SELECT s.*, a.id AS annotation_id, a.split, a.condition, a.method, a.seed,
+                      a.revision, a.finalized_at, a.annotator
+               FROM sessions s JOIN annotations a ON a.session_id = s.id
+               WHERE a.status = 'final' ORDER BY s.created_at"""
+        ).fetchall()
+        tombs = {r[0] for r in conn.execute("SELECT audio_sha256 FROM contaminated_audio")}
+        for r in rows:
+            row = dict(r)
+            cid = f"{row['condition']}-{row['split']}-{row['id'][:8]}"
+            if row["split"] not in ("dev", "holdout") or row["condition"] not in MINIMUMS:
+                problems.append(f"{cid}: finalized without a valid split/condition")
+                continue
+            path = data_dir / row["audio_path"]
+            if not path.is_file():
+                problems.append(f"{cid}: original recording missing")
+                continue
+            if hashlib.sha256(path.read_bytes()).hexdigest() != row["audio_sha256"]:
+                problems.append(f"{cid}: original recording does not match its stored sha256")
+                continue
+            buf = decode_mono(path, SR)
+            pcm = hashlib.sha256(buf.samples.tobytes()).hexdigest()
+            if row.get("pcm_sha256") and pcm != row["pcm_sha256"]:
+                problems.append(f"{cid}: decoded audio differs from the hash stored at upload")
+                continue
+            notes = [
+                {
+                    "start": n["start_seconds"],
+                    "end": n["end_seconds"],
+                    "midi": n["midi_pitch"],
+                    "technique": n["technique"],
+                }
+                for n in conn.execute(
+                    "SELECT * FROM annotation_notes WHERE annotation_id = ? ORDER BY start_seconds",
+                    (row["annotation_id"],),
+                )
+            ]
+            if not notes or any(n["end"] > buf.duration_seconds + 0.001 for n in notes):
+                problems.append(f"{cid}: reference notes empty or past the end of the audio")
+                continue
+            prov = provenance.status(row)
+            if row["audio_sha256"] in tombs and prov["holdout_eligible"]:
+                prov = prov | {
+                    "holdout_eligible": False,
+                    "ineligible_reason": "audio recorded as contaminated",
+                }
+            clips.append(
+                {
+                    "id": cid,
+                    "session_id": row["id"],
+                    "split": row["split"],
+                    "condition": row["condition"],
+                    "method": row["method"],
+                    "seed": row["seed"],
+                    "revision": row["revision"],
+                    "finalized_at": row["finalized_at"],
+                    "annotator": row["annotator"],
+                    "audio_sha256": row["audio_sha256"],
+                    "pcm_sha256": pcm,
+                    "duration": buf.duration_seconds,
+                    "notes": notes,
+                    "provenance": prov,
+                    "samples": buf.samples,
+                }
+            )
+    finally:
+        conn.close()
+    mark_duplicates(clips)
+    return clips, problems
+
+
+def mark_duplicates(clips: list[dict]) -> None:
+    """Audio appearing more than once in the dataset is not independent: flag every copy."""
+    seen: dict[str, set[str]] = defaultdict(set)
+    for c in clips:
+        for h in {c["audio_sha256"], c["pcm_sha256"]}:
+            seen[h].add(c["id"])
+    dup_ids = {i for ids in seen.values() if len(ids) > 1 for i in ids}
+    for c in clips:
+        if c["id"] in dup_ids:
+            c["duplicate"] = True
+
+
+def holdout_exclusion(clip: dict) -> list[str]:
+    """Why a holdout recording may not count (empty = eligible). Dev recordings: always []."""
+    if clip["split"] != "holdout":
+        return []
+    reasons = []
+    prov = clip.get("provenance")
+    if is_engine_seed(clip.get("seed")):
+        reasons.append("reference seeded from engine output")
+    if not prov:
+        reasons.append("provenance unknown (fail closed)")
+    else:
+        if not prov.get("holdout_eligible"):
+            reasons.append(f"not holdout-eligible: {prov.get('ineligible_reason')}")
+        exposed, final = prov.get("model_exposed_at"), clip.get("finalized_at")
+        if exposed and (not final or exposed < final):
+            reasons.append("model output requested before the latest finalization")
+    if clip.get("duplicate"):
+        reasons.append("audio appears more than once in the dataset")
+    return reasons
+
+
+def counts(clips: list[dict]) -> dict:
+    """Recordings/notes that count toward the minimums (ineligible holdout recordings excluded)."""
     c: dict = defaultdict(lambda: {"recordings": 0, "notes": 0})
     for clip in clips:
-        p = (
-            (prov or {}).get(clip["tags"]["session_id"])
-            if prov is not None
-            else clip["tags"].get("provenance")
-        )
-        if holdout_exclusion(clip, p):
+        if holdout_exclusion(clip):
             continue
-        k = (clip["tags"]["condition"], clip["split"])
+        k = (clip["condition"], clip["split"])
         c[k]["recordings"] += 1
         c[k]["notes"] += len(clip["notes"])
     return c
@@ -311,8 +215,7 @@ def without_technique_notes(ref: list[dict], est: list[dict]) -> tuple[list[dict
     """Drop technique-tagged reference notes *and* the estimates the scorer matches to them.
 
     Uses the same optimal onset+pitch matching as the main score (mir_eval), so an estimate that
-    matches a plain note is never removed, and detected technique notes are not counted as false
-    positives against the remaining plain notes.
+    matches a plain note is never removed.
     """
     import mir_eval
     import numpy as np
@@ -336,153 +239,93 @@ def without_technique_notes(ref: list[dict], est: list[dict]) -> tuple[list[dict
     return plain, [e for j, e in enumerate(est) if j not in drop]
 
 
-def score(args) -> int:
-    from jamrecall_bench.methods import FMAX, FMIN, METHODS, grid
+def engine_params(method: str) -> dict:
+    if method == "basic-pitch":
+        from jamrecall_bench.methods import FMAX, FMIN
 
-    analyse, to_notes, spec = METHODS[args.method]
-    manifest_path = CORPUS / args.tag / "manifest.json"
-    if not manifest_path.exists():
-        print(f"no manifest at {manifest_path}: run prepare first (it writes none on errors)")
-        return 2
-    manifest = read_json(manifest_path)
-    clips = manifest["clips"]
-    if args.method == "basic-pitch":
         app = app_bp_params()
         if (app["min_freq_hz"], app["max_freq_hz"]) != (FMIN, FMAX):
-            print("bench frequency range differs from the app's; refusing to score")
-            return 1
-        params = {k: app[k] for k in BENCH_BP_KEYS}
-    else:
-        params = read_json(RESULTS / f"{args.method}.json")["selected_params"] if spec else {}
-    feats, timing = {}, {}
-    for c in clips:
-        t0 = time.perf_counter()
-        wav = CORPUS / c["audio"]
-        if file_sha256(wav) != c.get("wav_sha256"):
-            print(f"{c['id']}: analysis audio differs from the manifest; run prepare again")
-            return 1
-        feats[c["id"]] = analyse(wav)
-        timing[c["id"]] = time.perf_counter() - t0
-    tuned = None
-    if args.tune_on_dev and spec:
-        dev = [c for c in clips if c["split"] == "dev"]  # never holdout
-        best = max(
-            grid(spec),
-            key=lambda p: aggregate(
-                [clip_stats(c["notes"], to_notes(feats[c["id"]], p)) for c in dev]
-            )["onset"]["f1"],
-        )
-        tuned, params = best, best
+            raise SystemExit("bench frequency range differs from the app's; refusing to score")
+        return {k: app[k] for k in BENCH_BP_KEYS}
+    return read_json(RESULTS / f"{method}.json")["selected_params"]
 
-    per_rec, groups, excluded, included_holdout = {}, defaultdict(list), [], []
+
+def analyse_all(method: str, clips: list[dict]) -> tuple[dict, dict]:
+    """Run an engine's analysis on every clip's decoded samples (written to a private temp dir)."""
+    import soundfile as sf
+
+    from jamrecall_bench.methods import METHODS
+
+    analyse = METHODS[method][0]
+    feats, secs = {}, {}
+    with tempfile.TemporaryDirectory() as tmp:
+        for c in clips:
+            wav = Path(tmp) / f"{c['id']}.wav"
+            sf.write(wav, c["samples"], SR, subtype="FLOAT")
+            t0 = time.perf_counter()
+            feats[c["id"]] = analyse(wav)
+            secs[c["id"]] = time.perf_counter() - t0
+    return feats, secs
+
+
+def score_engine(method: str, clips: list[dict], feats: dict, secs: dict, params: dict) -> dict:
+    from jamrecall_bench.methods import METHODS
+
+    to_notes = METHODS[method][1]
+    per_rec, groups = {}, defaultdict(list)
     for c in clips:
         t0 = time.perf_counter()
         est = to_notes(feats[c["id"]], params)
-        proc = timing[c["id"]] + time.perf_counter() - t0
-        s = clip_stats(c["notes"], est)
-        plain_ref, plain_est = without_technique_notes(c["notes"], est)
-        s_plain = clip_stats(plain_ref, plain_est) if plain_ref else None
-        cond, split = c["tags"]["condition"], c["split"]
-        per_rec[c["id"]] = aggregate([s]) | {
-            "split": split,
-            "condition": cond,
-            "duration_s": c["duration"],
-            "processing_s": round(proc, 3),
-            "real_time_factor": round(proc / c["duration"], 4),
-        }
-        reasons = holdout_exclusion(c, c["tags"].get("provenance"))
-        if reasons:
-            # Not independent evidence (DR-0004): engine seed, contamination or unknown provenance.
-            per_rec[c["id"]]["excluded_from_holdout"] = reasons
-            excluded.append({"id": c["id"], "reasons": reasons})
+        proc = secs[c["id"]] + time.perf_counter() - t0
+        per_rec[c["id"]], s, s_plain = score_clip(c, est, proc)
+        if per_rec[c["id"]]["excluded_from_holdout"]:
             continue
-        if split == "holdout":
-            included_holdout.append(c["id"])
-        groups[(split, cond)].append((s, s_plain))
-        if cond in GATING:
-            groups[(split, "A+B+C")].append((s, s_plain))
+        groups[(c["split"], c["condition"])].append((s, s_plain))
+        if c["condition"] in GATING:
+            groups[(c["split"], "A+B+C")].append((s, s_plain))
+    return {
+        "method": method,
+        "params": params,
+        "per_recording": per_rec,
+        "summary": summarize(groups),
+    }
+
+
+def score_clip(c: dict, est: list[dict], proc: float):
+    s = clip_stats(c["notes"], est)
+    plain_ref, plain_est = without_technique_notes(c["notes"], est)
+    s_plain = clip_stats(plain_ref, plain_est) if plain_ref else None
+    rec = aggregate([s]) | {
+        "split": c["split"],
+        "condition": c["condition"],
+        "duration_s": round(c["duration"], 3),
+        "processing_s": round(proc, 3),
+        "real_time_factor": round(proc / c["duration"], 4),
+        "excluded_from_holdout": holdout_exclusion(c) or None,
+    }
+    return rec, s, s_plain
+
+
+def summarize(groups: dict) -> dict:
     summary = {}
     for (split, cond), v in sorted(groups.items()):
         plain = [p for _, p in v if p is not None]
         summary[f"{split}/{cond}"] = aggregate([s for s, _ in v]) | {
             "excluding_technique_notes": aggregate(plain)["onset"] if plain else None
         }
-    out = {
-        "method": args.method,
-        "params": params,
-        "app_params": app_bp_params() if args.method == "basic-pitch" else None,
-        "tuned_on_real_dev": tuned,
-        "manifest_fingerprint": manifest["fingerprint"],
-        "scored_clip_ids": sorted(c["id"] for c in clips),
-        "excluded_holdout": excluded,
-        "holdout_included_ids": sorted(included_holdout),
-        "per_recording": per_rec,
-        "summary": summary,
-    }
-    write_json(results_dir(args.tag) / f"real-{args.method}.json", out)
-    for k, v in summary.items():
-        print(
-            f"  {k:18s} onset P {v['onset']['precision']:.3f} R {v['onset']['recall']:.3f} "
-            f"F1 {v['onset']['f1']:.3f}  pitch exact {v['pitch_on_onset_matched']['exact']:.3f}"
-            f"  +offset F1 {v['onset_offset']['f1']:.3f}"
-        )
-    return 0
+    return summary
 
 
-# --- gate ---------------------------------------------------------------------------------------
+# --- decision -----------------------------------------------------------------------------------
 
 
-def evaluate_gate(
-    manifest: dict, bp: dict, py: dict, app_params: dict, db_prov: dict[str, dict | None]
-) -> dict:
-    """Pure gate decision. INCOMPLETE whenever the evidence is missing, stale or not the app's.
-
-    `db_prov` is provenance re-read from the app database at gate time; it, not the manifest or
-    the results, decides which holdout recordings are eligible.
-    """
-    clips = manifest["clips"]
-    problems: list[str] = []
-    excluded = []
-    eligible_holdout = []
-    for clip in clips:
-        sid = clip["tags"]["session_id"]
-        p = db_prov.get(sid)
-        if clip["split"] == "holdout" and clip["tags"].get("provenance") != p:
-            problems.append(
-                f"{clip['id']}: manifest provenance differs from the app database (re-run prepare)"
-            )
-        reasons = holdout_exclusion(clip, p)
-        if reasons:
-            excluded.append({"id": clip["id"], "reasons": reasons})
-            if any("fail closed" in r for r in reasons):
-                problems.append(f"{clip['id']}: holdout provenance unknown or untracked")
-        elif clip["split"] == "holdout":
-            eligible_holdout.append(clip["id"])
-    for name, r in (("basic-pitch", bp), ("pyin", py)):
-        if r.get("holdout_included_ids") != sorted(eligible_holdout):
-            problems.append(
-                f"{name} holdout scores do not cover exactly the eligible holdout recordings"
-            )
-    ids = sorted(c["id"] for c in clips)
-    current = fingerprint(clips)
-    if manifest.get("fingerprint") != current:
-        problems.append("manifest fingerprint does not match its contents")
-    for name, r in (("basic-pitch", bp), ("pyin", py)):
-        if r.get("manifest_fingerprint") != current:
-            problems.append(f"{name} results were scored on a different manifest; re-run score")
-        if r.get("scored_clip_ids") != ids:
-            problems.append(f"{name} results do not cover exactly the manifest's recordings")
-    if bp.get("tuned_on_real_dev") is not None:
-        problems.append(
-            "basic-pitch was re-tuned on dev; the app does not run those parameters "
-            "(integrate them through a decision request, then re-score untuned)"
-        )
-    if bp.get("app_params") != app_params or bp.get("params") != {
-        k: app_params[k] for k in BENCH_BP_KEYS
-    }:
-        problems.append("basic-pitch was scored with parameters other than the app's")
-
-    c = counts(clips, db_prov)
+def decide(clips: list[dict], bp: dict, py: dict, problems: list[str]) -> dict:
+    """Pure gate decision from scores computed in this run. Thresholds and minimums unchanged."""
+    excluded = [{"id": c["id"], "reasons": r} for c in clips if (r := holdout_exclusion(c))]
+    eligible = sorted(
+        c["id"] for c in clips if c["split"] == "holdout" and not holdout_exclusion(c)
+    )
+    c = counts(clips)
     below = []
     for cond, (n_dev, n_hold, n_notes) in MINIMUMS.items():
         dev, hold = c.get((cond, "dev"), {}), c.get((cond, "holdout"), {})
@@ -493,13 +336,12 @@ def evaluate_gate(
         ):
             below.append(cond)
     gating_below = [x for x in below if x in GATING]
-
-    checks, poor, missing_summaries = {}, [], []
+    checks, poor, missing = {}, [], []
     for cond in (*GATING, "A+B+C"):
         for name, r in (("basic-pitch", bp), ("pyin", py)):
-            if f"holdout/{cond}" not in r.get("summary", {}):
-                missing_summaries.append(f"{name}:holdout/{cond}")
-    if not missing_summaries:
+            if f"holdout/{cond}" not in r["summary"]:
+                missing.append(f"{name}:holdout/{cond}")
+    if not missing:
         f_bp = bp["summary"]["holdout/A+B+C"]["onset"]["f1"]
         f_py = py["summary"]["holdout/A+B+C"]["onset"]["f1"]
         checks[f"basic_pitch_onset_f1 >= {GATE_F1}"] = [f_bp, f_bp >= GATE_F1]
@@ -511,8 +353,7 @@ def evaluate_gate(
             checks[f"condition {cond}: pitch exact >= {POOR_PITCH}"] = [exact, exact >= POOR_PITCH]
             if f1 < POOR_F1 or exact < POOR_PITCH:
                 poor.append(cond)
-
-    if problems or gating_below or missing_summaries:
+    if problems or gating_below or missing:
         verdict = "INCOMPLETE"
     elif all(ok for _, ok in checks.values()):
         verdict = "PASS"
@@ -523,12 +364,12 @@ def evaluate_gate(
         "checks": checks,
         "poor_conditions": poor,
         "integrity_problems": problems,
-        "missing_summaries": missing_summaries,
+        "missing_summaries": missing,
         "conditions_below_minimum": below,
+        "eligible_holdout": eligible,
         "excluded_holdout": excluded,
-        "eligible_holdout": sorted(eligible_holdout),
-        "exploratory_D": (bp.get("summary", {}).get("holdout/D") or {}).get("onset"),
-        "manifest_fingerprint": current,
+        "counts": {f"{k[0]}/{k[1]}": v for k, v in sorted(c.items())},
+        "exploratory_D": (bp["summary"].get("holdout/D") or {}).get("onset"),
         "thresholds": {
             "gate_f1": GATE_F1,
             "condition_min_onset_f1": POOR_F1,
@@ -537,37 +378,77 @@ def evaluate_gate(
     }
 
 
-def gate(args) -> int:
-    d = results_dir(args.tag)
-    try:
-        manifest = read_json(CORPUS / args.tag / "manifest.json")
-        bp, py = read_json(d / "real-basic-pitch.json"), read_json(d / "real-pyin.json")
-    except FileNotFoundError as exc:
-        print(f"INCOMPLETE: {exc.filename} missing (run prepare and score for both engines)")
-        return 2
-    db_prov = read_db_provenance(
-        Path(args.data_dir).resolve() / "jamrecall.sqlite3", manifest["clips"]
-    )
-    result = evaluate_gate(manifest, bp, py, app_bp_params(), db_prov)
-    write_json(d / "real-gate.json", result)
-    print(json.dumps(result, indent=1))
-    return {"PASS": 0, "FAIL": 1, "INCOMPLETE": 2}[result["verdict"]]
+def run_validation(data_dir: Path) -> dict:
+    clips, problems = load_dataset(data_dir)
+    results = {}
+    for method in ("basic-pitch", "pyin"):
+        feats, secs = analyse_all(method, clips)
+        results[method] = score_engine(method, clips, feats, secs, engine_params(method))
+    report = decide(clips, results["basic-pitch"], results["pyin"], problems)
+    report |= {
+        "dataset_fingerprint": fingerprint(clips),
+        "data_dir": str(data_dir),
+        "app_basic_pitch_params": app_bp_params(),
+        "recordings": [{k: v for k, v in c.items() if k != "samples"} for c in clips],
+        "results": results,
+    }
+    return report
+
+
+def validate(args) -> int:
+    report = run_validation(Path(args.data_dir).resolve())
+    out = Path(args.out) if args.out else RESULTS / "real-validation.json"
+    write_json(out, report)
+    print(f"VERDICT: {report['verdict']}")
+    for k in ("integrity_problems", "conditions_below_minimum", "poor_conditions"):
+        if report[k]:
+            print(f"  {k}: {report[k]}")
+    for e in report["excluded_holdout"]:
+        print(f"  excluded {e['id']}: {'; '.join(e['reasons'])}")
+    for name, r in report["results"].items():
+        for key, v in r["summary"].items():
+            print(
+                f"  {name:11s} {key:16s} onset P {v['onset']['precision']:.3f} "
+                f"R {v['onset']['recall']:.3f} F1 {v['onset']['f1']:.3f}  pitch exact "
+                f"{v['pitch_on_onset_matched']['exact']:.3f}  +offset F1 "
+                f"{v['onset_offset']['f1']:.3f}"
+            )
+    print(f"report: {out}")
+    return {"PASS": 0, "FAIL": 1, "INCOMPLETE": 2}[report["verdict"]]
+
+
+def tune_dev(args) -> int:
+    """Informational: best parameters on the real DEV split only. Never used by `validate`;
+    adopting them requires a decision request and an app change, then a fresh validation."""
+    from jamrecall_bench.methods import METHODS, grid
+
+    clips, problems = load_dataset(Path(args.data_dir).resolve())
+    dev = [c for c in clips if c["split"] == "dev"]
+    report = {"dev_recordings": [c["id"] for c in dev], "problems": problems, "best": {}}
+    for method in ("basic-pitch", "pyin"):
+        _, to_notes, spec = METHODS[method]
+        feats, _ = analyse_all(method, dev)
+        report["best"][method] = max(
+            grid(spec),
+            key=lambda p: aggregate(
+                [clip_stats(c["notes"], to_notes(feats[c["id"]], p)) for c in dev]
+            )["onset"]["f1"],
+        )
+    write_json(RESULTS / "real-tune-dev.json", report)
+    print(json.dumps(report, indent=1))
+    return 0
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--tag", default="real")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    p = sub.add_parser("prepare")
-    p.add_argument("--data-dir", required=True)
-    p.add_argument("--refs", default=None)
-    s = sub.add_parser("score")
-    s.add_argument("method", choices=["basic-pitch", "pyin"])
-    s.add_argument("--tune-on-dev", action="store_true")
-    g = sub.add_parser("gate")
-    g.add_argument("--data-dir", required=True, help="app data directory (provenance source)")
+    v = sub.add_parser("validate")
+    v.add_argument("--data-dir", required=True, help="app data directory (database + recordings)")
+    v.add_argument("--out", default=None)
+    t = sub.add_parser("tune-dev")
+    t.add_argument("--data-dir", required=True)
     args = ap.parse_args()
-    sys.exit({"prepare": prepare, "score": score, "gate": gate}[args.cmd](args))
+    sys.exit({"validate": validate, "tune-dev": tune_dev}[args.cmd](args))
 
 
 if __name__ == "__main__":
