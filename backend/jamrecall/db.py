@@ -276,6 +276,19 @@ def migrate(db_path: Path) -> int:
         row = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
         current = row[0] or 0
         started_at = current
+        if started_at == 0:
+            # Fresh database: all migrations and the 'complete' baseline in ONE transaction, so an
+            # interrupted first start cannot leave a fresh database looking upgraded.
+            body = "".join(
+                f"{script}; INSERT INTO schema_version VALUES ({v});"
+                for v, script in enumerate(MIGRATIONS, start=1)
+            )
+            conn.executescript(
+                f"BEGIN; {body} INSERT INTO provenance_baseline "
+                "(id, status, created_at_schema, recorded_at) VALUES "
+                "(1, 'complete', 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')); COMMIT;"
+            )
+            return len(MIGRATIONS)
         for version, script in enumerate(MIGRATIONS, start=1):
             if version <= current:
                 continue
@@ -283,13 +296,12 @@ def migrate(db_path: Path) -> int:
                 f"BEGIN; {script}; INSERT INTO schema_version VALUES ({version}); COMMIT;"
             )
             current = version
-        # Record once whether this database was created with full provenance tracking. A database
-        # that existed before migration 6 has history the guard cannot vouch for ('partial').
+        # Upgraded database: it has history the guard cannot vouch for -> 'partial' (recorded once).
         conn.execute(
             "INSERT OR IGNORE INTO provenance_baseline "
             "(id, status, created_at_schema, recorded_at) "
-            "VALUES (1, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
-            ("complete" if started_at == 0 else "partial", started_at),
+            "VALUES (1, 'partial', ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            (started_at,),
         )
         conn.commit()
         return current

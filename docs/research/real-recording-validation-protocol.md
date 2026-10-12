@@ -89,7 +89,9 @@ The app database is the only source of truth for holdout eligibility (`jamrecall
 - **Contaminated (permanent)** when any of these happens:
   - a transcription is *requested* while the recording has no finalized annotation (requesting is
     the earliest point at which model output can exist or be seen; failed runs count too);
-  - a finalized annotation is *reopened* after a transcription was requested;
+  - a finalized annotation is *reopened* after model output was produced for it. That includes a
+    transcription request and **a validation run**: `validate` records exposure for every finalized
+    recording before it runs the engines;
   - its audio was uploaded before, in any session, even a deleted one. Both the container hash and
     the decoded-audio hash are checked, so re-wrapping the same samples doesn't help
     (`seen_audio`, `contaminated_audio`);
@@ -125,8 +127,10 @@ The app database is the only source of truth for holdout eligibility (`jamrecall
 - **Complete history required**: the database records once (`provenance_baseline`) whether it was
   created with full tracking (`complete`) or upgraded from an older version (`partial`). An upgraded
   database may contain deleted sessions or recordings without decoded-audio hashes that the guard
-  cannot vouch for, so `validate` refuses it (INCOMPLETE). The dataset is recorded in a dedicated,
-  freshly created data directory (`var-validation/`, manual-testing guide §7.2).
+  cannot vouch for, so `validate` refuses it (INCOMPLETE), and the app shows *Not holdout-eligible*
+  for every recording in it. A fresh database is initialised in one transaction together with its
+  `complete` baseline. The dataset is recorded in a dedicated, freshly created data directory
+  (`var-validation/`, manual-testing guide §7.2).
 - **Consistent snapshot**: `validate` reads all references and provenance in one database read
   transaction, then re-reads after scoring. Any change in between (e.g. a reference reopened during
   the run) makes the verdict INCOMPLETE.
@@ -151,6 +155,9 @@ The app database is the only source of truth for holdout eligibility (`jamrecall
   `backend/jamrecall/transcription/basic_pitch_params.json`, which equals the GuitarSet-dev selection in
   `bench/results/basic-pitch.json`), and the pYIN baseline (`bench/results/pyin.json`).
   Audio is decoded with the app's own decoder (`jamrecall.audio.decode_mono`, 22,050 Hz mono).
+- **Exposure first**: before running any engine, `validate` records model-output exposure for every
+  finalized recording it will score (its only database write), and refuses to score any whose
+  exposure was not recorded.
 - **One process, no trusted intermediates**: `validate` reads the database, checks each original
   recording against its stored container and decoded-audio hashes, runs both engines on that audio,
   scores, and decides in a single run. It never reads score, manifest or reference files back. The

@@ -376,8 +376,12 @@ def test_sessions_from_before_tracking_are_never_eligible(tmp_path):
     conn.row_factory = sqlite3.Row
     row = dict(conn.execute("SELECT * FROM sessions WHERE id = 'old'").fetchone())
     assert row["provenance_origin"] == "pre-tracking"
-    st = provenance.status(row)
+    st = provenance.status(row, baseline_ok=True)  # origin rule alone
     assert st["holdout_eligible"] is False and "tracked from creation" in st["ineligible_reason"]
+    assert (
+        "existed before full contamination tracking" in provenance.status(row)["ineligible_reason"]
+    )  # and this upgraded database's baseline is 'partial' anyway
+    assert conn.execute("SELECT status FROM provenance_baseline").fetchone()[0] == "partial"
     assert conn.execute("SELECT COUNT(*) FROM seen_audio WHERE hash = 'sha-old'").fetchone()[0] == 1
 
 
@@ -400,3 +404,50 @@ def test_finalize_is_idempotent_and_final_rows_cannot_be_inserted(fixture_client
             "updated_at) VALUES ('x', ?, 'final', 'manual', 'blank', 't', 't')",
             (other,),
         )
+
+
+def test_partial_database_reports_nothing_eligible(tmp_path):
+    """Codex round 3 finding 2: in an upgraded database the app must not advertise eligibility."""
+    from fastapi.testclient import TestClient
+
+    from jamrecall.app import create_app
+    from jamrecall.config import Settings
+
+    data = tmp_path / "data"
+    data.mkdir()
+    conn = sqlite3.connect(data / "jamrecall.sqlite3")
+    conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+    for v, script in enumerate(MIGRATIONS[:5], start=1):
+        conn.executescript(f"BEGIN; {script}; INSERT INTO schema_version VALUES ({v}); COMMIT;")
+    conn.close()
+    c = TestClient(
+        create_app(
+            Settings(data_dir=data, transcription_engine="fixture", allow_test_adapters=True)
+        )
+    )
+    p = new_session(c, 900)["provenance"]
+    assert p["holdout_eligible"] is False
+    assert p["ineligible_reason"] == "data directory existed before full contamination tracking"
+
+
+def test_fresh_initialisation_is_atomic_and_complete(tmp_path):
+    db = tmp_path / "fresh.sqlite3"
+    assert migrate(db) == len(MIGRATIONS)
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT status, created_at_schema FROM provenance_baseline").fetchone() == (
+        "complete",
+        0,
+    )
+    assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == len(MIGRATIONS)
+    assert migrate(db) == len(MIGRATIONS)  # re-running changes nothing
+    assert conn.execute("SELECT COUNT(*) FROM provenance_baseline").fetchone()[0] == 1
+
+
+def test_finalize_twice_logs_one_event(fixture_client):
+    c = fixture_client
+    sid = new_session(c, 910)["id"]
+    finalize_holdout(c, sid)
+    c.post(f"/api/sessions/{sid}/annotation/finalize")
+    z = zipfile.ZipFile(io.BytesIO(c.get(f"/api/sessions/{sid}/export").content))
+    kinds = [e["kind"] for e in json.loads(z.read("metadata.json"))["provenance_events"]]
+    assert kinds.count("annotation_finalized") == 1

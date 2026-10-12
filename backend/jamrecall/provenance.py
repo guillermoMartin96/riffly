@@ -178,11 +178,35 @@ def on_finalized(conn: sqlite3.Connection, session: dict[str, Any]) -> None:
     log(conn, session, "annotation_finalized")
 
 
-def status(session: dict[str, Any]) -> dict[str, Any]:
+def baseline_complete(conn: sqlite3.Connection) -> bool:
+    """True only if this database was created with full contamination tracking (migration 6)."""
+    try:
+        row = conn.execute("SELECT status FROM provenance_baseline WHERE id = 1").fetchone()
+    except sqlite3.OperationalError:
+        return False
+    return row is not None and row[0] == "complete"
+
+
+def on_validation_output(conn: sqlite3.Connection, session_id: str) -> None:
+    """The validation gate is about to produce model output for this finalized recording: record
+    the exposure first, exactly like a transcription request, so a later reopen contaminates it."""
+    session = _reload(conn, session_id)
+    if session.get("model_exposed_at") is None:
+        conn.execute(
+            "UPDATE sessions SET model_exposed_at = ? WHERE id = ?", (store.now_iso(), session_id)
+        )
+    log(conn, session, "validation_output_produced")
+
+
+def status(session: dict[str, Any], baseline_ok: bool = False) -> dict[str, Any]:
+    """Holdout eligibility. `baseline_ok` must come from `baseline_complete(conn)`: in a database
+    with history from before full tracking nothing is eligible (fail closed by default)."""
     tracked = session.get("provenance_tracked_since")
     contaminated = session.get("contaminated_at")
     origin = session.get("provenance_origin")
-    if tracked is None or origin is None or origin == "pre-tracking":
+    if not baseline_ok:
+        eligible, why = False, "data directory existed before full contamination tracking"
+    elif tracked is None or origin is None or origin == "pre-tracking":
         eligible, why = False, "provenance not tracked from creation"
     elif contaminated is not None:
         eligible, why = False, session.get("contamination_reason") or "contaminated"

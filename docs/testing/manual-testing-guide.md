@@ -158,7 +158,9 @@ existed before this version is refused. Stop the app, then start it with:
 ```sh
 JAMRECALL_DATA_DIR=$PWD/var-validation ./scripts/dev.sh
 ```
-- Check that it prints `Data directory: …/var-validation`.
+- Check that it prints `Data directory: …/var-validation`, and that a new take shows
+  **Holdout-eligible**. In an older data directory every take shows *Not holdout-eligible: data
+  directory existed before full contamination tracking*.
 - Keep exploratory takes in the normal `var/`.
 - Use this command every time you record or annotate dataset takes.
 - Never delete or wipe `var-validation/` until validation is done.
@@ -206,9 +208,11 @@ badge before finalizing a holdout take: it must say **Holdout-eligible**.
 - Before any validation run: correcting a holdout reference is allowed (for example, a typo found on
   re-listening), **provided no model output was requested for that take**. If it was, **Reopen**
   warns that it would disqualify the take. Say why you're correcting it in the Notes field.
-- After holdout validation has been run: do not edit holdout references. If one is genuinely wrong,
-  tell me. The change needs a new decision request, recorded with its reason and the before/after
-  scores, because edits made after seeing results bias the evaluation.
+- After a validation run: the gate has produced model output for every finalized take, so
+  **Reopen** warns, and continuing permanently disqualifies that take as holdout. If a holdout
+  reference is genuinely wrong, tell me instead: the change needs a new decision request recorded
+  with its reason and the before/after scores, because edits made after seeing results bias the
+  evaluation.
 - Do not wipe `var-validation/` while it holds the validation dataset: that erases provenance.
 
 ### 7.7 When the takes are done

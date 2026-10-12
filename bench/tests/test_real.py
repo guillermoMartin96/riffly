@@ -375,3 +375,25 @@ def test_changes_during_validation_are_detected(app, monkeypatch):
     # What was scored is the consistent pre-change snapshot (clean provenance, original notes).
     [rec] = report["recordings"]
     assert rec["notes"][0]["midi"] == 57 and rec["provenance"]["contaminated_at"] is None
+
+
+def test_validation_records_exposure_so_later_reopen_contaminates(app):
+    """Codex round 3 finding 1: the gate's own model output counts as exposure."""
+    c, var = app
+    hold = recorded(c, 57, seed=4)
+    finalize(c, hold, "holdout", midi=57)
+    assert c.get(f"/api/sessions/{hold}").json()["provenance"]["model_exposed_at"] is None
+    first = real.run_validation(var)
+    assert first["eligible_holdout"] == [f"A-holdout-{hold[:8]}"]
+    p = c.get(f"/api/sessions/{hold}").json()["provenance"]
+    assert p["model_exposed_at"] is not None and p["holdout_eligible"] is True
+    # Reopening after a validation run now needs confirmation and contaminates.
+    r = c.post(f"/api/sessions/{hold}/annotation/reopen")
+    assert r.status_code == 409 and r.json()["code"] == "would_disqualify_holdout"
+    c.post(f"/api/sessions/{hold}/annotation/reopen?confirm_disqualify=true")
+    c.post(f"/api/sessions/{hold}/annotation/finalize")
+    second = real.run_validation(var)
+    assert second["eligible_holdout"] == []
+    assert any(
+        "not holdout-eligible" in r for e in second["excluded_holdout"] for r in e["reasons"]
+    )

@@ -7,6 +7,10 @@ parameters) and pYIN in the same process, scores both, applies the approved crit
 report. It never reads back intermediate files (reference JSON, manifests, score results), so
 editing such files cannot influence the verdict.
 
+`validate` writes exactly one thing to the database: before producing model output it records
+exposure for every finalized recording it will score, like a transcription request; reopening such
+a reference later contaminates it.
+
 Run from bench/ with the backend venv (it has the app decoder, Basic Pitch, librosa and mir_eval):
   ../backend/.venv/bin/python -m jamrecall_bench.real validate --data-dir ../var
   ../backend/.venv/bin/python -m jamrecall_bench.real tune-dev --data-dir ../var  # informational
@@ -129,6 +133,29 @@ def read_snapshot(db_path: Path) -> tuple[list[dict], list[str]]:
         conn.close()
 
 
+def record_validation_exposure(data_dir: Path, splits: tuple[str, ...]) -> None:
+    """Before producing any model output, record it as exposure for every finalized recording
+    that will be scored (like a transcription request). Reopening such a reference afterwards then
+    contaminates it permanently, so validation results cannot feed back into holdout references."""
+    from jamrecall import provenance
+    from jamrecall.db import transaction
+
+    db_path = data_dir / "jamrecall.sqlite3"
+    if not db_path.exists():
+        return
+    with transaction(db_path) as conn:
+        try:
+            rows = conn.execute(
+                "SELECT session_id FROM annotations WHERE status = 'final' AND split IN "
+                f"({', '.join('?' for _ in splits)})",
+                splits,
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return
+        for r in rows:
+            provenance.on_validation_output(conn, r[0])
+
+
 def snapshot_digest(records: list[dict]) -> str:
     return hashlib.sha256(json.dumps(records, sort_keys=True, default=str).encode()).hexdigest()
 
@@ -165,7 +192,7 @@ def load_dataset(data_dir: Path) -> tuple[list[dict], list[str], str]:
         if not notes or any(n["end"] > buf.duration_seconds + 0.001 for n in notes):
             problems.append(f"{cid}: reference notes empty or past the end of the audio")
             continue
-        prov = provenance.status(row)
+        prov = provenance.status(row, baseline_ok=True)  # read_snapshot verified the baseline
         if row["tombstoned"] and prov["holdout_eligible"]:
             prov = prov | {
                 "holdout_eligible": False,
@@ -410,7 +437,13 @@ def decide(clips: list[dict], bp: dict, py: dict, problems: list[str]) -> dict:
 
 
 def run_validation(data_dir: Path) -> dict:
+    record_validation_exposure(data_dir, ("dev", "holdout"))
     clips, problems, digest = load_dataset(data_dir)
+    # Every recording scored below must have had its exposure recorded first.
+    unrecorded = [c for c in clips if not c["provenance"].get("model_exposed_at")]
+    for c in unrecorded:
+        problems.append(f"{c['id']}: finalized after exposure was recorded for this run; run again")
+    clips = [c for c in clips if c not in unrecorded]
     results = {}
     for method in ("basic-pitch", "pyin"):
         feats, secs = analyse_all(method, clips)
@@ -458,6 +491,7 @@ def tune_dev(args) -> int:
     adopting them requires a decision request and an app change, then a fresh validation."""
     from jamrecall_bench.methods import METHODS, grid
 
+    record_validation_exposure(Path(args.data_dir).resolve(), ("dev",))
     clips, problems, _ = load_dataset(Path(args.data_dir).resolve())
     dev = [c for c in clips if c["split"] == "dev"]
     report = {"dev_recordings": [c["id"] for c in dev], "problems": problems, "best": {}}

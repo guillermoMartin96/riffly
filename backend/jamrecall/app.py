@@ -102,7 +102,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def audio_file(session: dict[str, Any]) -> Path:
         return settings.data_dir / session["audio_path"]
 
-    def session_out(session: dict[str, Any]) -> dict[str, Any]:
+    def session_out(session: dict[str, Any], baseline_ok: bool) -> dict[str, Any]:
         out = {
             k: session[k]
             for k in (
@@ -119,7 +119,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         out["capture_info"] = (
             json.loads(session["capture_info"]) if session.get("capture_info") else None
         )
-        out["provenance"] = provenance.status(session)
+        out["provenance"] = provenance.status(session, baseline_ok)
         if "riff_count" in session:
             out["riff_count"] = session["riff_count"]
         return out
@@ -220,17 +220,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 recorded=info is not None,
             )
             s = store.get_session(conn, sid)
-        return session_out(s)
+            return session_out(s, provenance.baseline_complete(conn))
 
     @app.get("/api/sessions")
     def list_sessions() -> list[dict[str, Any]]:
         with transaction(settings.db_path) as conn:
-            return [session_out(s) for s in store.list_sessions(conn)]
+            ok = provenance.baseline_complete(conn)
+            return [session_out(s, ok) for s in store.list_sessions(conn)]
 
     @app.get("/api/sessions/{session_id}")
     def get_session(session_id: str) -> dict[str, Any]:
         with transaction(settings.db_path) as conn:
-            return session_out(require_session(conn, session_id))
+            return session_out(
+                require_session(conn, session_id), provenance.baseline_complete(conn)
+            )
 
     @app.get("/api/sessions/{session_id}/audio")
     def get_audio(session_id: str) -> Response:
@@ -370,8 +373,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def finalize_annotation(session_id: str) -> dict[str, Any]:
         with transaction(settings.db_path) as conn:
             s = require_session(conn, session_id)
+            before = annotations.get(conn, session_id)
             out = annotation_call(annotations.finalize, conn, session_id)
-            provenance.on_finalized(conn, s)
+            if before is not None and before["status"] != "final":
+                provenance.on_finalized(conn, s)
             return out
 
     @app.post("/api/sessions/{session_id}/annotation/reopen")
