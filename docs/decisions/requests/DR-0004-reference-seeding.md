@@ -43,7 +43,7 @@ finalized, how contamination is prevented, and how changes to finalized holdout 
 Documented in `docs/research/real-recording-validation-protocol.md` ("Independence of holdout
 references") and `docs/testing/manual-testing-guide.md` §7.3–7.5.
 
-Known gap: viewing a holdout take's model output *before* blank annotation (clicking Transcribe first)
-is prevented by procedure only; the app cannot detect it. A small guard is proposed for approval: record
-whether the session had a transcription before the annotation was finalized, export it, and have the
-gate exclude such holdout references. Not implemented.
+Contamination guard: **approved 2026-10-12 and implemented**. Transcription requested before
+finalization, or reopening after model output was requested, permanently disqualifies a recording as
+holdout. The state is write-once, recorded in exports, and re-read by the gate from the app database
+(fail closed). Details: protocol, "Contamination tracking".

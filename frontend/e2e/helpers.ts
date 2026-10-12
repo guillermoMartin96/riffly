@@ -52,3 +52,11 @@ export async function audioState(page: Page) {
 }
 
 export const sha256 = (b: Buffer) => createHash('sha256').update(b).digest('hex');
+
+/** Click Transcribe on a recording whose reference is not finalized: confirm the holdout warning. */
+export async function transcribeDisqualifying(page: Page) {
+  await page.getByRole('button', { name: 'Transcribe' }).click();
+  await expect(page.getByTestId('disqualify-warning')).toBeVisible();
+  await page.getByRole('button', { name: /Transcribe anyway/ }).click();
+  await expect(page.getByTestId('disqualify-warning')).toHaveCount(0);
+}

@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { PHRASE_MIDI } from './fake-mic';
-import { audioState, installMic, MIC_MODE, sha256 } from './helpers';
+import { audioState, installMic, MIC_MODE, sha256, transcribeDisqualifying } from './helpers';
 
 // Full browser workflow through the real getUserMedia + MediaRecorder (Opus/WebM, 48 kHz) + upload
 // path, transcribed by the configured engine (default: real Basic Pitch, DR-0001). The microphone
@@ -52,7 +52,7 @@ test('record → save → transcribe → select → save riff → reload → rep
 
   // 2. Transcribe with the real engine and check it heard the phrase that was played.
   t0 = Date.now();
-  await page.getByRole('button', { name: 'Transcribe' }).click();
+  await transcribeDisqualifying(page);
   await expect(page.getByTestId('transcription-status')).toHaveText('succeeded', { timeout: 60_000 });
   latency.click_to_succeeded_s = (Date.now() - t0) / 1000;
   await expect(page.getByTestId('tab-note').first()).toBeVisible();

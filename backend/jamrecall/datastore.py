@@ -10,7 +10,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-from jamrecall import annotations, store
+from jamrecall import annotations, provenance, store
 from jamrecall.config import Settings
 
 EXPORT_FORMAT = "jamrecall-export-v1"
@@ -58,6 +58,9 @@ def export_zip(settings: Settings, conn: sqlite3.Connection, session_id: str) ->
         raise KeyError(session_id)
     audio = settings.data_dir / session["audio_path"]
     ann = annotations.get(conn, session_id)
+    runs = transcriptions_document(conn, session_id)
+    if any(r["notes"] for r in runs):
+        provenance.on_model_output_exposed(conn, session, "export")
     metadata = {
         "format": EXPORT_FORMAT,
         "exported_at": store.now_iso(),
@@ -66,15 +69,16 @@ def export_zip(settings: Settings, conn: sqlite3.Connection, session_id: str) ->
         "audio_missing": not audio.is_file(),
         "riffs": store.list_riffs(conn, session_id),
         "annotation_status": ann["status"] if ann else None,
+        # Informational copy; the validation gate re-reads provenance from the database.
+        "provenance": provenance.status(session),
+        "provenance_events": provenance.events(conn, session_id),
     }
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         if audio.is_file():
             z.write(audio, f"audio/{audio.name}")  # original bytes, unmodified
         z.writestr("metadata.json", json.dumps(metadata, indent=1))
-        z.writestr(
-            "transcriptions.json", json.dumps(transcriptions_document(conn, session_id), indent=1)
-        )
+        z.writestr("transcriptions.json", json.dumps(runs, indent=1))
         if ann is not None:
             z.writestr(
                 "reference.json", json.dumps(annotations.reference_document(session, ann), indent=1)

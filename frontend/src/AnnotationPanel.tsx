@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   api,
   ApiError,
@@ -26,6 +26,7 @@ interface Props {
   playhead: number;
   onAudition: (start: number, end: number) => void;
   onNotesChange: (notes: AnnotationNote[]) => void;
+  onProvenanceChange: () => void;
 }
 
 type Row = AnnotationNote & { key: number };
@@ -47,13 +48,24 @@ const EMPTY_FIELDS: AnnotationFields = {
  * Minimal reference-annotation editor. Saves to a separate store from the model output, which is
  * never modified. Times are seconds on the original recording's clock.
  */
-export function AnnotationPanel({ session, transcription, playhead, onAudition, onNotesChange }: Props) {
+export function AnnotationPanel({
+  session,
+  transcription,
+  playhead,
+  onAudition,
+  onNotesChange,
+  onProvenanceChange,
+}: Props) {
+  const [reopenWarning, setReopenWarning] = useState<string | null>(null);
   const [saved, setSaved] = useState<Annotation | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [rows, setRows] = useState<Row[] | null>(null);
   const [fields, setFields] = useState<AnnotationFields>(EMPTY_FIELDS);
   const [seed, setSeed] = useState<string>('blank');
   const [dirty, setDirty] = useState(false);
+  // Incremented on every local edit; a save only marks the panel clean (and adopts the server's
+  // copy) if nothing was edited while it was in flight.
+  const editVersion = useRef(0);
   const [message, setMessage] = useState<{ kind: 'error' | 'ok'; text: string } | null>(null);
   const duration = session.duration_seconds;
   const final = saved?.status === 'final';
@@ -82,6 +94,7 @@ export function AnnotationPanel({ session, transcription, playhead, onAudition, 
   useEffect(() => onNotesChange(rows ? stripKeys(rows) : []), [rows, onNotesChange]);
 
   function update(next: Row[]) {
+    editVersion.current += 1;
     setRows(next);
     setDirty(true);
     setMessage(null);
@@ -90,7 +103,8 @@ export function AnnotationPanel({ session, transcription, playhead, onAudition, 
     update(rows!.map((r) => (r.key === key ? { ...r, ...patch } : r)));
   }
   function setField<K extends keyof AnnotationFields>(k: K, v: AnnotationFields[K]) {
-    setFields({ ...fields, [k]: v });
+    editVersion.current += 1;
+    setFields((f) => ({ ...f, [k]: v }));
     setDirty(true);
     setMessage(null);
   }
@@ -113,6 +127,7 @@ export function AnnotationPanel({ session, transcription, playhead, onAudition, 
       setMessage({ kind: 'error', text: problem });
       return false;
     }
+    const version = editVersion.current;
     try {
       const a = await api.saveAnnotation(session.id, {
         ...fields,
@@ -124,6 +139,11 @@ export function AnnotationPanel({ session, transcription, playhead, onAudition, 
       });
       setSaved(a);
       setSeed(a.seed);
+      if (editVersion.current !== version) {
+        // Edited while saving: keep the newer local state and stay dirty.
+        setMessage({ kind: 'ok', text: 'Saved an earlier version; newer edits are not saved yet.' });
+        return false;
+      }
       setRows(withKeys(a.notes));
       setDirty(false);
       setMessage({ kind: 'ok', text: `Saved draft (${a.notes.length} notes).` });
@@ -140,15 +160,23 @@ export function AnnotationPanel({ session, transcription, playhead, onAudition, 
       const a = await api.finalizeAnnotation(session.id);
       setSaved(a);
       setMessage({ kind: 'ok', text: `Finalized as ${a.split} / condition ${a.condition}. Split is now locked.` });
+      onProvenanceChange();
     } catch (err) {
       setMessage({ kind: 'error', text: err instanceof ApiError ? err.message : String(err) });
     }
   }
 
-  async function reopen() {
-    const a = await api.reopenAnnotation(session.id);
-    setSaved(a);
-    setMessage({ kind: 'ok', text: `Reopened (revision ${a.revision}). The split stays locked.` });
+  async function reopen(confirmDisqualify = false) {
+    setReopenWarning(null);
+    try {
+      const a = await api.reopenAnnotation(session.id, confirmDisqualify);
+      setSaved(a);
+      setMessage({ kind: 'ok', text: `Reopened (revision ${a.revision}). The split stays locked.` });
+      onProvenanceChange();
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'would_disqualify_holdout') setReopenWarning(err.message);
+      else setMessage({ kind: 'error', text: err instanceof ApiError ? err.message : String(err) });
+    }
   }
 
   if (!loaded) return null;
@@ -182,6 +210,27 @@ export function AnnotationPanel({ session, transcription, playhead, onAudition, 
 
       {rows && (
         <>
+          {fields.split === 'holdout' && !session.provenance.holdout_eligible && (
+            <p className="error" data-testid="holdout-ineligible-warning">
+              This recording is not eligible as a holdout reference (
+              {session.provenance.ineligible_reason}). The validation gate will exclude it; use it as
+              dev, or record a new take for holdout.
+            </p>
+          )}
+          {reopenWarning && (
+            <div className="warn-box" role="alertdialog" data-testid="reopen-warning">
+              <p>
+                <strong>Reopening would permanently disqualify this recording as a holdout reference</strong>{' '}
+                because model output was already requested for it.
+              </p>
+              <div className="row-start">
+                <button className="danger" onClick={() => reopen(true)}>
+                  Reopen anyway (disqualify from holdout)
+                </button>
+                <button onClick={() => setReopenWarning(null)}>Cancel</button>
+              </div>
+            </div>
+          )}
           {fields.split === 'holdout' && isEngineSeed(seed) && (
             <p className="error" data-testid="seed-warning">
               This reference was started from model output. Under the validation protocol it cannot
@@ -363,7 +412,7 @@ export function AnnotationPanel({ session, transcription, playhead, onAudition, 
                 Finalize
               </button>
             )}
-            {final && <button onClick={reopen}>Reopen for edits</button>}
+            {final && <button onClick={() => reopen(false)}>Reopen for edits</button>}
             <a className="button-link" href={api.exportUrl(session.id)} download data-testid="export-link">
               Export .zip
             </a>

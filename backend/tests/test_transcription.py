@@ -10,7 +10,7 @@ from jamrecall.transcription.registry import EngineConfigError, build_adapter
 
 def test_no_engine_configured_returns_409(client):
     sid = upload(client, wav_bytes(tone(1.0))).json()["id"]
-    r = client.post(f"/api/sessions/{sid}/transcriptions")
+    r = client.post(f"/api/sessions/{sid}/transcriptions?confirm_disqualify=true")
     assert r.status_code == 409
     assert r.json()["code"] == "no_engine"
     assert client.get(f"/api/sessions/{sid}/transcriptions/latest").status_code == 404
@@ -36,7 +36,7 @@ def test_fixture_transcription_is_flagged_test_only(fixture_client):
         "model_load_seconds": 0.0,
     }
     sid = upload(fixture_client, wav_bytes(tone(3.0))).json()["id"]
-    started = fixture_client.post(f"/api/sessions/{sid}/transcriptions")
+    started = fixture_client.post(f"/api/sessions/{sid}/transcriptions?confirm_disqualify=true")
     assert started.status_code == 202
     # TestClient runs background tasks before returning.
     t = fixture_client.get(f"/api/sessions/{sid}/transcriptions/latest").json()
@@ -53,7 +53,7 @@ def test_fixture_transcription_is_flagged_test_only(fixture_client):
 def test_engine_failure_is_persisted(make_client):
     c = make_client(transcription_engine="failing", allow_test_adapters=True)
     sid = upload(c, wav_bytes(tone(1.0))).json()["id"]
-    c.post(f"/api/sessions/{sid}/transcriptions")
+    c.post(f"/api/sessions/{sid}/transcriptions?confirm_disqualify=true")
     t = c.get(f"/api/sessions/{sid}/transcriptions/latest").json()
     assert t["status"] == "failed"
     assert "always fails" in t["error"]
@@ -65,7 +65,7 @@ def test_transcribe_with_missing_audio_is_rejected(fixture_client, tmp_path):
     sid = upload(fixture_client, wav_bytes(tone(1.0))).json()["id"]
     for f in (tmp_path / "data" / "media" / "sessions" / sid).iterdir():
         f.unlink()
-    r = fixture_client.post(f"/api/sessions/{sid}/transcriptions")
+    r = fixture_client.post(f"/api/sessions/{sid}/transcriptions?confirm_disqualify=true")
     assert r.status_code == 409
     assert r.json()["code"] == "audio_missing"
 

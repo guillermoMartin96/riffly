@@ -120,6 +120,11 @@ Tick each item during the exploratory round and tell me any that fail.
 - [ ] **Export .zip** contains `audio/original.webm`, `reference.json`, `transcriptions.json`,
       `metadata.json`. In `metadata.json`, `capture_info.track_settings` shows your mic's sample rate,
       with echoCancellation / noiseSuppression / autoGainControl `false`.
+- [ ] Holdout guard: on a new take the badge says **Holdout-eligible**. Click **Transcribe** → a
+      warning appears → **Cancel** → still eligible. Click **Transcribe** → **Transcribe anyway** →
+      the badge says **Not holdout-eligible** and stays so after a reload. On another take: Start
+      blank → Split holdout → add a note → **Finalize** → **Transcribe** (no warning) → still
+      eligible.
 - [ ] **Delete recording…** removes it from the list, and `backend/.venv/bin/python -m jamrecall.manage list`
       no longer shows it.
 
@@ -160,9 +165,10 @@ on a take.
 
 ### 7.4 Holdout take (blank annotation, no exposure to model notes)
 1. **● Record** the take → listen back with **▶ Play** (re-record if it's flawed).
-2. **Do not click Transcribe.** As long as the take has no transcription, the timeline shows no
-   model notes and **Start from model output** is disabled. Don't open the take's export or the
-   API's transcription endpoints either.
+2. **Do not click Transcribe.** The recording shows **Holdout-eligible** in green under its title.
+   If you click Transcribe before finalizing, the app warns that this would permanently disqualify
+   the take; choose **Cancel**. As long as the take has no transcription, the timeline shows no model
+   notes and **Start from model output** is disabled.
 3. Reference annotation → **Start blank** → set Split **holdout** right away.
 4. Annotate by ear and waveform: zoom in, click the attack to place the playhead, **+ Add note at
    playhead**, type the pitch, set the end with ⌖ or the time box, check each note with ▶. Do a second
@@ -173,12 +179,14 @@ on a take.
 6. Only **after** finalizing may you click **Transcribe** on that take, if you want to look.
    You don't need to: the gate runs both engines itself.
 
-What makes a holdout reference invalid, and what to do:
-- It was started from model output: the app warns, and the gate excludes it automatically (seed
-  recorded). Record a replacement take.
-- You saw model notes for the take before finalizing it (e.g. you clicked Transcribe first): the app
-  cannot detect this today. Don't finalize it as holdout: delete it, or use it as a dev take instead.
-  Record a replacement holdout take.
+What makes a holdout reference invalid (the gate excludes it automatically, listing the reason):
+- It was started from model output (seed recorded).
+- Model output was requested before the reference was finalized: you chose **Transcribe anyway**.
+  The badge turns to **Not holdout-eligible**, permanently.
+- The reference was reopened after model output was requested (**Reopen anyway**).
+- Its audio is identical to a recording that was disqualified before.
+In each case, use the take as dev (or delete it) and record a replacement holdout take. Check the
+badge before finalizing a holdout take: it must say **Holdout-eligible**.
 
 ### 7.5 Changing a finalized reference
 - **Reopen for edits** keeps the split locked and increments the reference's revision. The revision and
@@ -189,8 +197,9 @@ What makes a holdout reference invalid, and what to do:
 - After holdout scoring has started: do not edit holdout references. If one is genuinely wrong, tell me.
   The change needs a new decision request, recorded with its reason and the before/after scores,
   because edits made after seeing results bias the evaluation.
-- If a holdout reference was reopened after its take was transcribed, treat it as contaminated:
-  exclude it (delete the take) and record a replacement.
+- If a holdout take was transcribed after finalization, **Reopen** warns that it would disqualify it.
+  Continuing marks it contaminated permanently, and the gate will exclude it.
+- Do not wipe `var/` while it holds the validation dataset: that erases provenance.
 
 ### 7.6 When the takes are done
 Tell me the dataset is ready and I'll run it, or run it yourself:
@@ -200,7 +209,7 @@ cd bench
 ../backend/.venv/bin/python -m jamrecall_bench.real prepare --data-dir ../var
 .venv-bp/bin/python   -m jamrecall_bench.real score basic-pitch
 .venv-pyin/bin/python -m jamrecall_bench.real score pyin
-.venv-pyin/bin/python -m jamrecall_bench.real gate
+.venv-pyin/bin/python -m jamrecall_bench.real gate --data-dir ../var
 ```
 - `export-references` writes only **finalized** references.
 - `prepare` refuses the whole set (and writes no manifest) if any reference is unfinalized, has no

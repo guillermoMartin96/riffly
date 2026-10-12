@@ -40,6 +40,7 @@ export function SessionView({ sessionId, config, onRiffsChanged, onSessionDelete
   const [pxPerSecond, setPxPerSecond] = useState(120);
   const [refNotes, setRefNotes] = useState<AnnotationNote[]>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [disqualifyWarning, setDisqualifyWarning] = useState<string | null>(null);
   const onRefNotes = useCallback((n: AnnotationNote[]) => setRefNotes(n), []);
 
   const missing = session?.status === 'audio_missing';
@@ -121,12 +122,26 @@ export function SessionView({ sessionId, config, onRiffsChanged, onSessionDelete
     }
   }
 
-  async function transcribe() {
-    setTranscribeError(null);
+  async function reloadSession() {
     try {
-      setTranscription(await api.startTranscription(sessionId));
+      setSession(await api.getSession(sessionId));
+    } catch {
+      /* keep the current view */
+    }
+  }
+
+  async function transcribe(confirmDisqualify = false) {
+    setTranscribeError(null);
+    setDisqualifyWarning(null);
+    try {
+      setTranscription(await api.startTranscription(sessionId, confirmDisqualify));
+      await reloadSession();
     } catch (err) {
-      setTranscribeError(message(err));
+      if (err instanceof ApiError && err.code === 'would_disqualify_holdout') {
+        setDisqualifyWarning(err.message);
+      } else {
+        setTranscribeError(message(err));
+      }
     }
   }
 
@@ -205,6 +220,15 @@ export function SessionView({ sessionId, config, onRiffsChanged, onSessionDelete
           · {session.audio_mime} · {(session.audio_bytes / 1024).toFixed(1)} KB · sha256{' '}
           <code title={session.audio_sha256}>{session.audio_sha256.slice(0, 12)}…</code>
         </p>
+        <p
+          className={session.provenance.holdout_eligible ? 'eligibility ok' : 'eligibility not'}
+          data-testid="holdout-eligibility"
+          data-eligible={String(session.provenance.holdout_eligible)}
+        >
+          {session.provenance.holdout_eligible
+            ? 'Holdout-eligible: no model output has been requested before its reference was finalized.'
+            : `Not holdout-eligible (permanent): ${session.provenance.ineligible_reason}. Usable for dev and exploratory work.`}
+        </p>
         <div className="row-start">
           <a className="button-link" href={api.exportUrl(session.id)} download>
             Export .zip
@@ -282,8 +306,25 @@ export function SessionView({ sessionId, config, onRiffsChanged, onSessionDelete
         busy={inProgress}
         error={transcribeError}
         disabled={missing}
-        onTranscribe={transcribe}
+        onTranscribe={() => transcribe(false)}
       />
+      {disqualifyWarning && (
+        <div className="panel warn-box" role="alertdialog" data-testid="disqualify-warning">
+          <p>
+            <strong>This would permanently disqualify the recording as a holdout reference.</strong>{' '}
+            Its reference annotation is not finalized, so seeing model output now could influence it.
+            That is fine for dev and exploratory takes. For a holdout take: cancel, annotate it blank,
+            finalize, and transcribe afterwards.
+          </p>
+          <p className="hint">{disqualifyWarning}</p>
+          <div className="row-start">
+            <button className="danger" onClick={() => transcribe(true)}>
+              Transcribe anyway (disqualify from holdout)
+            </button>
+            <button onClick={() => setDisqualifyWarning(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
 
       {!missing && (
         <AnnotationPanel
@@ -292,6 +333,7 @@ export function SessionView({ sessionId, config, onRiffsChanged, onSessionDelete
           playhead={player.time}
           onAudition={(start, end) => player.play({ start, end, loop: false })}
           onNotesChange={onRefNotes}
+          onProvenanceChange={reloadSession}
         />
       )}
 

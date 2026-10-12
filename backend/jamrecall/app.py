@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator
 from starlette.concurrency import run_in_threadpool
 
-from jamrecall import annotations, datastore, store
+from jamrecall import annotations, datastore, provenance, store
 from jamrecall.annotations import AnnotationError
 from jamrecall.audio import (
     ANALYSIS_SAMPLE_RATE,
@@ -119,6 +119,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         out["capture_info"] = (
             json.loads(session["capture_info"]) if session.get("capture_info") else None
         )
+        out["provenance"] = provenance.status(session)
         if "riff_count" in session:
             out["riff_count"] = session["riff_count"]
         return out
@@ -212,6 +213,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 created_at=store.now_iso(),
                 capture_info=info,
             )
+            provenance.on_session_created(conn, s)
+            s = store.get_session(conn, sid)
         return session_out(s)
 
     @app.get("/api/sessions")
@@ -282,7 +285,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.post("/api/sessions/{session_id}/transcriptions", status_code=202)
-    def start_transcription(session_id: str, tasks: BackgroundTasks) -> dict[str, Any]:
+    def start_transcription(
+        session_id: str, tasks: BackgroundTasks, confirm_disqualify: bool = False
+    ) -> dict[str, Any]:
         if adapter is None:
             raise ApiError(409, "no_engine", "No transcription engine is configured")
         with transaction(settings.db_path) as conn:
@@ -292,6 +297,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             t = store.insert_transcription(
                 conn, session_id, adapter.engine, adapter.version, adapter.test_only
             )
+            try:
+                # Before finalization this permanently disqualifies the recording as holdout.
+                provenance.on_transcription_requested(conn, s, t["id"], confirm_disqualify)
+            except provenance.WouldContaminate as exc:
+                raise ApiError(
+                    409,
+                    "would_disqualify_holdout",
+                    "Transcribing now permanently makes this recording ineligible as a holdout "
+                    f"reference ({exc.reason}). Repeat with confirm_disqualify=true to proceed.",
+                ) from exc  # the transaction rolls back: no transcription row is created
             out = transcription_out(conn, t)
         tasks.add_task(run_transcription, settings, adapter, t["id"])
         return out
@@ -303,7 +318,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             t = store.latest_transcription(conn, session_id)
             if t is None:
                 raise ApiError(404, "no_transcription", "This session has not been transcribed")
-            return transcription_out(conn, t)
+            out = transcription_out(conn, t)
+            if out["notes"]:
+                provenance.on_model_output_exposed(
+                    conn, store.get_session(conn, session_id), "api:transcriptions/latest"
+                )
+            return out
 
     @app.get("/api/sessions/{session_id}/transcriptions")
     def transcription_history(session_id: str) -> list[dict[str, Any]]:
@@ -342,13 +362,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/sessions/{session_id}/annotation/finalize")
     def finalize_annotation(session_id: str) -> dict[str, Any]:
         with transaction(settings.db_path) as conn:
-            require_session(conn, session_id)
-            return annotation_call(annotations.finalize, conn, session_id)
+            s = require_session(conn, session_id)
+            out = annotation_call(annotations.finalize, conn, session_id)
+            provenance.on_finalized(conn, s)
+            return out
 
     @app.post("/api/sessions/{session_id}/annotation/reopen")
-    def reopen_annotation(session_id: str) -> dict[str, Any]:
+    def reopen_annotation(session_id: str, confirm_disqualify: bool = False) -> dict[str, Any]:
         with transaction(settings.db_path) as conn:
-            require_session(conn, session_id)
+            s = require_session(conn, session_id)
+            if annotations.get(conn, session_id) is None:
+                raise ApiError(404, "no_annotation", "This session has no annotation")
+            try:
+                # Editing after model output was requested permanently disqualifies holdout use.
+                provenance.on_reopen(conn, s, confirm_disqualify)
+            except provenance.WouldContaminate as exc:
+                raise ApiError(
+                    409,
+                    "would_disqualify_holdout",
+                    "Model output was already requested for this recording; reopening its "
+                    "reference permanently makes it ineligible as a holdout reference. Repeat "
+                    "with confirm_disqualify=true to proceed.",
+                ) from exc
             return annotation_call(annotations.reopen, conn, session_id)
 
     @app.get("/api/sessions/{session_id}/export")

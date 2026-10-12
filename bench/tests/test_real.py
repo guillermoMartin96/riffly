@@ -12,6 +12,25 @@ from jamrecall_bench import real
 from jamrecall_bench.score import aggregate, clip_stats
 
 APP = real.app_bp_params()
+CLEAN = {"tracked": True, "contaminated": False, "reason": None}
+
+
+def db_of(manifest, **overrides):
+    """Database provenance as the gate would read it (clean unless overridden by session id)."""
+    return {
+        c["tags"]["session_id"]: overrides.get(c["tags"]["session_id"], dict(CLEAN))
+        for c in manifest["clips"]
+    }
+
+
+def eligible_ids(manifest):
+    return sorted(
+        c["id"]
+        for c in manifest["clips"]
+        if c["split"] == "holdout" and not real.holdout_exclusion(c, c["tags"].get("provenance"))
+    )
+
+
 BP_PARAMS = {k: APP[k] for k in real.BENCH_BP_KEYS}
 
 
@@ -81,6 +100,7 @@ def clip(cid, split, cond, seed="blank", n=20):
             "revision": 1,
             "session_id": cid,
             "audio_sha256": cid,
+            "provenance": dict(CLEAN),
         },
     }
 
@@ -114,13 +134,14 @@ def results(manifest, f1=0.9, per_cond=None, params=BP_PARAMS, tuned=None):
         "tuned_on_real_dev": tuned,
         "manifest_fingerprint": manifest["fingerprint"],
         "scored_clip_ids": sorted(c["id"] for c in manifest["clips"]),
+        "holdout_included_ids": eligible_ids(manifest),
         "summary": summary,
     }
 
 
 def test_gate_passes_only_with_complete_matching_evidence():
     m = full_manifest()
-    g = real.evaluate_gate(m, results(m, 0.9), results(m, 0.8, params={}), APP)
+    g = real.evaluate_gate(m, results(m, 0.9), results(m, 0.8, params={}), APP, db_of(m))
     assert g["verdict"] == "PASS", g
 
 
@@ -130,7 +151,7 @@ def test_gate_refuses_stale_results():
     m2 = copy.deepcopy(m)
     m2["clips"][0]["notes"][0]["midi"] = 61  # a reference changed after scoring
     m2["fingerprint"] = real.fingerprint(m2["clips"])
-    g = real.evaluate_gate(m2, bp, py, APP)
+    g = real.evaluate_gate(m2, bp, py, APP, db_of(m2))
     assert g["verdict"] == "INCOMPLETE"
     assert any("different manifest" in p for p in g["integrity_problems"])
 
@@ -139,7 +160,7 @@ def test_gate_refuses_missing_condition_summaries():
     m = full_manifest()
     bp = results(m, 0.95)
     bp["summary"] = {"holdout/A+B+C": summary_entry(0.95)}  # no per-condition results
-    g = real.evaluate_gate(m, bp, results(m, 0.5, params={}), APP)
+    g = real.evaluate_gate(m, bp, results(m, 0.5, params={}), APP, db_of(m))
     assert g["verdict"] == "INCOMPLETE" and g["missing_summaries"]
 
 
@@ -147,21 +168,23 @@ def test_gate_refuses_params_other_than_the_apps():
     m = full_manifest()
     py = results(m, 0.5, params={})
     tuned = results(m, 0.95, tuned={"onset_thresh": 0.3})
-    assert real.evaluate_gate(m, tuned, py, APP)["verdict"] == "INCOMPLETE"
+    assert real.evaluate_gate(m, tuned, py, APP, db_of(m))["verdict"] == "INCOMPLETE"
     other = results(m, 0.95, params=BP_PARAMS | {"onset_thresh": 0.3})
-    assert real.evaluate_gate(m, other, py, APP)["verdict"] == "INCOMPLETE"
+    assert real.evaluate_gate(m, other, py, APP, db_of(m))["verdict"] == "INCOMPLETE"
 
 
 def test_gate_fails_on_poor_condition_or_losing_to_pyin():
     m = full_manifest()
     py = results(m, 0.5, params={})
     poor = results(m, 0.9, per_cond={"B": (0.65,)})
-    g = real.evaluate_gate(m, poor, py, APP)
+    g = real.evaluate_gate(m, poor, py, APP, db_of(m))
     assert g["verdict"] == "FAIL" and g["poor_conditions"] == ["B"]
     bad_pitch = results(m, 0.9, per_cond={"C": (0.9, 0.85)})
-    assert real.evaluate_gate(m, bad_pitch, py, APP)["poor_conditions"] == ["C"]
+    assert real.evaluate_gate(m, bad_pitch, py, APP, db_of(m))["poor_conditions"] == ["C"]
     assert (
-        real.evaluate_gate(m, results(m, 0.85), results(m, 0.9, params={}), APP)["verdict"]
+        real.evaluate_gate(m, results(m, 0.85), results(m, 0.9, params={}), APP, db_of(m))[
+            "verdict"
+        ]
         == "FAIL"
     )
 
@@ -170,7 +193,7 @@ def test_engine_seeded_holdout_does_not_count_toward_minimums():
     m = full_manifest()
     m["clips"][2]["tags"]["seed"] = "transcription:x:basic-pitch@0.4.0"  # an A holdout clip
     m["fingerprint"] = real.fingerprint(m["clips"])
-    g = real.evaluate_gate(m, results(m, 0.9), results(m, 0.8, params={}), APP)
+    g = real.evaluate_gate(m, results(m, 0.9), results(m, 0.8, params={}), APP, db_of(m))
     assert g["verdict"] == "INCOMPLETE" and "A" in g["conditions_below_minimum"]
 
 
@@ -205,6 +228,10 @@ def data_dir(tmp_path):
                 sample_rate=22050,
                 created_at="t",
             )
+        with transaction(d / "jamrecall.sqlite3") as conn:
+            from jamrecall import provenance
+
+            provenance.on_session_created(conn, store.get_session(conn, f"s{i}"))
         sids.append((f"s{i}", sha))
     return d, sids
 
@@ -272,19 +299,22 @@ def test_gate_refuses_changed_analysis_audio():
     m2 = copy.deepcopy(m)
     m2["clips"][0]["wav_sha256"] = "changed"
     m2["fingerprint"] = real.fingerprint(m2["clips"])
-    assert real.evaluate_gate(m2, bp, py, APP)["verdict"] == "INCOMPLETE"
+    assert real.evaluate_gate(m2, bp, py, APP, db_of(m2))["verdict"] == "INCOMPLETE"
     m3 = copy.deepcopy(m)
     m3["clips"][0]["audio"] = "x/other.wav"
     m3["fingerprint"] = real.fingerprint(m3["clips"])
-    assert real.evaluate_gate(m3, bp, py, APP)["verdict"] == "INCOMPLETE"
+    assert real.evaluate_gate(m3, bp, py, APP, db_of(m3))["verdict"] == "INCOMPLETE"
 
 
 def test_gate_refuses_results_scored_with_other_frequency_bounds():
     m = full_manifest()
     py = results(m, 0.8, params={})
     bp = results(m, 0.9)
-    assert real.evaluate_gate(m, bp, py, APP)["verdict"] == "PASS"
-    assert real.evaluate_gate(m, bp, py, APP | {"min_freq_hz": 100.0})["verdict"] == "INCOMPLETE"
+    assert real.evaluate_gate(m, bp, py, APP, db_of(m))["verdict"] == "PASS"
+    assert (
+        real.evaluate_gate(m, bp, py, APP | {"min_freq_hz": 100.0}, db_of(m))["verdict"]
+        == "INCOMPLETE"
+    )
 
 
 def test_score_refuses_tampered_analysis_audio(tmp_path, data_dir, monkeypatch):
@@ -296,3 +326,123 @@ def test_score_refuses_tampered_analysis_audio(tmp_path, data_dir, monkeypatch):
     sf.write(wav, np.zeros(22050, np.float32), 22050)  # swap the audio after prepare
     args = Namespace(tag="t", method="pyin", tune_on_dev=False)
     assert real.score(args) == 1
+
+
+# --- contamination guard (DR-0004 guard, 2026-10-12) ---------------------------------------
+
+CONTAMINATED = {
+    "tracked": True,
+    "contaminated": True,
+    "reason": "transcription requested before the reference annotation was finalized",
+}
+
+
+def test_clean_holdout_recordings_remain_eligible():
+    m = full_manifest()
+    g = real.evaluate_gate(m, results(m, 0.9), results(m, 0.8, params={}), APP, db_of(m))
+    assert g["verdict"] == "PASS" and g["excluded_holdout"] == []
+    assert len(g["eligible_holdout"]) == 9
+
+
+def test_contaminated_holdout_is_excluded_reported_and_not_counted():
+    m = full_manifest()
+    target = next(
+        c for c in m["clips"] if c["split"] == "holdout" and c["tags"]["condition"] == "B"
+    )
+    target["tags"]["provenance"] = dict(CONTAMINATED)  # prepare recorded the DB state
+    m["fingerprint"] = real.fingerprint(m["clips"])
+    bp, py = results(m, 0.9), results(m, 0.8, params={})
+    g = real.evaluate_gate(m, bp, py, APP, db_of(m, **{target["id"]: dict(CONTAMINATED)}))
+    assert g["verdict"] == "INCOMPLETE" and "B" in g["conditions_below_minimum"]
+    assert g["excluded_holdout"] == [
+        {
+            "id": target["id"],
+            "reasons": ["contaminated: " + CONTAMINATED["reason"]],
+        }
+    ]
+    assert target["id"] not in g["eligible_holdout"] and g["integrity_problems"] == []
+
+
+def test_manifest_or_results_claiming_clean_cannot_override_the_database():
+    m = full_manifest()  # manifest (and results) say every recording is clean
+    target = next(c for c in m["clips"] if c["split"] == "holdout")
+    bp, py = results(m, 0.95), results(m, 0.8, params={})
+    g = real.evaluate_gate(m, bp, py, APP, db_of(m, **{target["id"]: dict(CONTAMINATED)}))
+    assert g["verdict"] == "INCOMPLETE"
+    assert any("differs from the app database" in p for p in g["integrity_problems"])
+    assert any("do not cover exactly the eligible holdout" in p for p in g["integrity_problems"])
+
+
+def test_missing_or_untracked_provenance_fails_closed():
+    m = full_manifest()
+    target = next(c for c in m["clips"] if c["split"] == "holdout")
+    for db_value in (None, {"tracked": False, "contaminated": False, "reason": None}):
+        g = real.evaluate_gate(
+            m,
+            results(m, 0.95),
+            results(m, 0.8, params={}),
+            APP,
+            db_of(m, **{target["id"]: db_value}),
+        )
+        assert g["verdict"] == "INCOMPLETE"
+        assert any("fail closed" in r for e in g["excluded_holdout"] for r in e["reasons"])
+    # A database without the session at all (e.g. wiped) also fails closed.
+    g = real.evaluate_gate(m, results(m, 0.95), results(m, 0.8, params={}), APP, {})
+    assert g["verdict"] == "INCOMPLETE" and len(g["excluded_holdout"]) == 9
+
+
+def test_dev_recordings_may_be_contaminated():
+    m = full_manifest()
+    dev = [c for c in m["clips"] if c["split"] == "dev"]
+    for c in dev:
+        c["tags"]["provenance"] = dict(CONTAMINATED)
+    m["fingerprint"] = real.fingerprint(m["clips"])
+    db = db_of(m, **{c["id"]: dict(CONTAMINATED) for c in dev})
+    g = real.evaluate_gate(m, results(m, 0.9), results(m, 0.8, params={}), APP, db)
+    assert g["verdict"] == "PASS" and g["excluded_holdout"] == []
+
+
+def test_prepare_takes_provenance_from_the_database_not_the_reference(
+    tmp_path, data_dir, monkeypatch
+):
+    from jamrecall import provenance, store
+    from jamrecall.db import transaction
+
+    monkeypatch.setattr(real, "CORPUS", tmp_path / "corpus")
+    d, sids = data_dir
+    with transaction(d / "jamrecall.sqlite3") as conn:
+        provenance.contaminate(conn, store.get_session(conn, sids[1][0]), "test contamination")
+    forged = {"tracked": True, "contaminated": False, "reason": None, "holdout_eligible": True}
+    write_refs(
+        tmp_path / "refs",
+        {
+            "clean": ref(session_id=sids[0][0], audio_sha256=sids[0][1], split="holdout"),
+            "dirty": ref(
+                session_id=sids[1][0], audio_sha256=sids[1][1], split="holdout", provenance=forged
+            ),
+        },
+    )
+    assert real.prepare(Namespace(tag="t", data_dir=str(d), refs=str(tmp_path / "refs"))) == 0
+    m = json.loads((tmp_path / "corpus" / "t" / "manifest.json").read_text())
+    tags = {c["id"]: c["tags"]["provenance"] for c in m["clips"]}
+    assert tags["clean"] == {"tracked": True, "contaminated": False, "reason": None}
+    assert tags["dirty"]["contaminated"] is True and tags["dirty"]["reason"] == "test contamination"
+    db = real.read_db_provenance(d / "jamrecall.sqlite3", m["clips"])
+    assert real.holdout_exclusion(
+        m["clips"][1] if m["clips"][1]["id"] == "dirty" else m["clips"][0], db[sids[1][0]]
+    )
+
+
+def test_old_schema_database_fails_closed(tmp_path):
+    import sqlite3
+
+    db = tmp_path / "old.sqlite3"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE sessions (id TEXT, audio_sha256 TEXT)")
+    conn.execute("INSERT INTO sessions VALUES ('s', 'h')")
+    conn.commit()
+    conn.close()
+    assert real.read_db_provenance(db, [{"session_id": "s"}]) == {"s": None}
+    assert real.read_db_provenance(tmp_path / "missing.sqlite3", [{"session_id": "s"}]) == {
+        "s": None
+    }

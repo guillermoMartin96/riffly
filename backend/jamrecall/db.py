@@ -91,6 +91,67 @@ MIGRATIONS: list[str] = [
     );
     CREATE INDEX annotation_notes_annotation ON annotation_notes(annotation_id, start_seconds);
     """,
+    # 4: holdout contamination provenance (DR-0004 guard). Write-once fields + append-only log.
+    """
+    ALTER TABLE sessions ADD COLUMN provenance_tracked_since TEXT;
+    ALTER TABLE sessions ADD COLUMN model_exposed_at TEXT;
+    ALTER TABLE sessions ADD COLUMN contaminated_at TEXT;
+    ALTER TABLE sessions ADD COLUMN contamination_reason TEXT;
+    CREATE TABLE provenance_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        audio_sha256 TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        at TEXT NOT NULL,
+        detail TEXT
+    );
+    CREATE INDEX provenance_events_session ON provenance_events(session_id, id);
+    -- Survives deletion of the session: identical audio re-uploaded later stays contaminated.
+    CREATE TABLE contaminated_audio (
+        audio_sha256 TEXT PRIMARY KEY,
+        first_at TEXT NOT NULL,
+        reason TEXT NOT NULL
+    );
+    -- Backfill: recordings transcribed before tracking existed have uncertain provenance.
+    UPDATE sessions SET provenance_tracked_since = strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+    UPDATE sessions
+       SET model_exposed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+           contaminated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+           contamination_reason = 'uncertain: transcribed before contamination tracking existed'
+     WHERE EXISTS (SELECT 1 FROM transcriptions t WHERE t.session_id = sessions.id);
+    INSERT OR IGNORE INTO contaminated_audio
+        SELECT audio_sha256, contaminated_at, contamination_reason FROM sessions
+         WHERE contaminated_at IS NOT NULL;
+    -- Irreversibility: once set, exposure/contamination cannot be cleared or rewritten.
+    CREATE TRIGGER sessions_contamination_write_once BEFORE UPDATE ON sessions
+    WHEN (OLD.contaminated_at IS NOT NULL
+          AND (NEW.contaminated_at IS NULL OR NEW.contaminated_at != OLD.contaminated_at
+               OR NEW.contamination_reason IS NOT OLD.contamination_reason))
+      OR (OLD.model_exposed_at IS NOT NULL
+          AND (NEW.model_exposed_at IS NULL OR NEW.model_exposed_at != OLD.model_exposed_at))
+      OR (OLD.provenance_tracked_since IS NOT NULL
+          AND NEW.provenance_tracked_since IS NOT OLD.provenance_tracked_since)
+    BEGIN
+        SELECT RAISE(ABORT, 'provenance is write-once');
+    END;
+    CREATE TRIGGER provenance_events_no_update BEFORE UPDATE ON provenance_events
+    BEGIN
+        SELECT RAISE(ABORT, 'provenance events are append-only');
+    END;
+    CREATE TRIGGER provenance_events_no_delete BEFORE DELETE ON provenance_events
+    WHEN EXISTS (SELECT 1 FROM sessions WHERE id = OLD.session_id)
+    BEGIN
+        SELECT RAISE(ABORT, 'provenance events are append-only');
+    END;
+    CREATE TRIGGER contaminated_audio_no_update BEFORE UPDATE ON contaminated_audio
+    BEGIN
+        SELECT RAISE(ABORT, 'contaminated audio records are permanent');
+    END;
+    CREATE TRIGGER contaminated_audio_no_delete BEFORE DELETE ON contaminated_audio
+    BEGIN
+        SELECT RAISE(ABORT, 'contaminated audio records are permanent');
+    END;
+    """,
 ]
 
 

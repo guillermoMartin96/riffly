@@ -13,7 +13,7 @@ import math
 import sqlite3
 from typing import Any
 
-from jamrecall import store
+from jamrecall import provenance, store
 
 TECHNIQUES = ("bend", "slide", "hammer_on", "pull_off", "vibrato", "harmonic", "palm_mute", "other")
 MAX_NOTES = 5000
@@ -196,6 +196,9 @@ def reference_document(session: dict[str, Any], a: dict[str, Any]) -> dict[str, 
         "notes_text": a["notes_text"],
         "created_at": a["created_at"],
         "finalized_at": a["finalized_at"],
+        # Informational only: the validation gate re-reads provenance from the app database,
+        # so editing this copy cannot make a contaminated recording eligible.
+        "provenance": provenance.status(session),
         "notes": [
             {
                 "start": n["start_seconds"],

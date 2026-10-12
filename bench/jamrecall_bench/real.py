@@ -4,7 +4,7 @@ From bench/:
   ../backend/.venv/bin/python -m jamrecall_bench.real prepare --data-dir ../var
   .venv-bp/bin/python   -m jamrecall_bench.real score basic-pitch [--tune-on-dev]
   .venv-pyin/bin/python -m jamrecall_bench.real score pyin [--tune-on-dev]
-  .venv-pyin/bin/python -m jamrecall_bench.real gate
+  .venv-pyin/bin/python -m jamrecall_bench.real gate --data-dir ../var
 
 Integrity rules (Codex interim review, 2026-10-09):
 - references must be explicitly finalized and state their seed; duplicates of a session or of
@@ -47,6 +47,72 @@ BENCH_BP_KEYS = ("onset_thresh", "frame_thresh", "min_note_ms", "mono")
 
 def is_engine_seed(seed: str | None) -> bool:
     return bool(seed) and seed.startswith("transcription:")
+
+
+PROVENANCE_COLUMNS = ("provenance_tracked_since", "contaminated_at", "contamination_reason")
+
+
+def read_db_provenance(db_path: Path, clips_or_refs: list[dict]) -> dict[str, dict | None]:
+    """Authoritative provenance per session id from the app database (None = unknown).
+
+    Unknown (missing database, old schema without tracking, unknown session) fails closed.
+    Audio recorded in `contaminated_audio` is contaminated even if its session row says otherwise.
+    """
+    out: dict[str, dict | None] = {}
+    sids = {(x.get("tags") or x).get("session_id") for x in clips_or_refs}
+    if not db_path.exists():
+        return {sid: None for sid in sids}
+    conn = sqlite3.connect(db_path)
+    try:
+        for sid in sids:
+            try:
+                row = conn.execute(
+                    f"SELECT {', '.join(PROVENANCE_COLUMNS)}, audio_sha256 FROM sessions "
+                    "WHERE id = ?",
+                    (sid,),
+                ).fetchone()
+                tomb = (
+                    conn.execute(
+                        "SELECT reason FROM contaminated_audio WHERE audio_sha256 = ?", (row[3],)
+                    ).fetchone()
+                    if row
+                    else None
+                )
+            except sqlite3.OperationalError:  # schema predates tracking
+                row, tomb = None, None
+            if row is None:
+                out[sid] = None
+                continue
+            tracked, contaminated_at, reason = row[0], row[1], row[2]
+            if contaminated_at is None and tomb is not None:
+                contaminated_at, reason = (
+                    "audio-record",
+                    f"audio previously contaminated: {tomb[0]}",
+                )
+            out[sid] = {
+                "tracked": tracked is not None,
+                "contaminated": contaminated_at is not None,
+                "reason": reason,
+            }
+    finally:
+        conn.close()
+    return out
+
+
+def holdout_exclusion(clip: dict, prov: dict | None) -> list[str]:
+    """Why a holdout clip may not count (empty list = eligible). Non-holdout clips: always []."""
+    if clip["split"] != "holdout":
+        return []
+    reasons = []
+    if is_engine_seed(clip["tags"].get("seed")):
+        reasons.append("reference seeded from engine output")
+    if prov is None:
+        reasons.append("provenance unknown (fail closed)")
+    elif not prov.get("tracked"):
+        reasons.append("provenance not tracked (fail closed)")
+    elif prov.get("contaminated"):
+        reasons.append(f"contaminated: {prov.get('reason')}")
+    return reasons
 
 
 def results_dir(tag: str) -> Path:
@@ -206,6 +272,10 @@ def prepare(args) -> int:
             print("ERROR", e)
         print("No manifest written: fix the references above and run prepare again.")
         return 1
+    db_prov = read_db_provenance(data_dir / "jamrecall.sqlite3", clips)
+    for clip in clips:
+        # From the app database only; anything a reference file claims is ignored.
+        clip["tags"]["provenance"] = db_prov[clip["tags"]["session_id"]]
     write_json(
         manifest_path, {"corpus": args.tag, "fingerprint": fingerprint(clips), "clips": clips}
     )
@@ -214,11 +284,19 @@ def prepare(args) -> int:
     return 0
 
 
-def counts(clips: list[dict]) -> dict:
-    """Recordings/notes that count toward the minimums (engine-seeded holdout refs excluded)."""
+def counts(clips: list[dict], prov: dict[str, dict | None] | None = None) -> dict:
+    """Recordings/notes that count toward the minimums (ineligible holdout recordings excluded).
+
+    `prov` maps session id -> provenance (the gate passes the database's); default: manifest tags.
+    """
     c: dict = defaultdict(lambda: {"recordings": 0, "notes": 0})
     for clip in clips:
-        if clip["split"] == "holdout" and is_engine_seed(clip["tags"].get("seed")):
+        p = (
+            (prov or {}).get(clip["tags"]["session_id"])
+            if prov is not None
+            else clip["tags"].get("provenance")
+        )
+        if holdout_exclusion(clip, p):
             continue
         k = (clip["tags"]["condition"], clip["split"])
         c[k]["recordings"] += 1
@@ -296,7 +374,7 @@ def score(args) -> int:
         )
         tuned, params = best, best
 
-    per_rec, groups, excluded = {}, defaultdict(list), []
+    per_rec, groups, excluded, included_holdout = {}, defaultdict(list), [], []
     for c in clips:
         t0 = time.perf_counter()
         est = to_notes(feats[c["id"]], params)
@@ -312,11 +390,14 @@ def score(args) -> int:
             "processing_s": round(proc, 3),
             "real_time_factor": round(proc / c["duration"], 4),
         }
-        if split == "holdout" and is_engine_seed(c["tags"].get("seed")):
-            # Protocol: a holdout reference seeded from engine output is not independent evidence.
-            per_rec[c["id"]]["excluded_from_holdout"] = "reference seeded from engine output"
-            excluded.append(c["id"])
+        reasons = holdout_exclusion(c, c["tags"].get("provenance"))
+        if reasons:
+            # Not independent evidence (DR-0004): engine seed, contamination or unknown provenance.
+            per_rec[c["id"]]["excluded_from_holdout"] = reasons
+            excluded.append({"id": c["id"], "reasons": reasons})
             continue
+        if split == "holdout":
+            included_holdout.append(c["id"])
         groups[(split, cond)].append((s, s_plain))
         if cond in GATING:
             groups[(split, "A+B+C")].append((s, s_plain))
@@ -333,7 +414,8 @@ def score(args) -> int:
         "tuned_on_real_dev": tuned,
         "manifest_fingerprint": manifest["fingerprint"],
         "scored_clip_ids": sorted(c["id"] for c in clips),
-        "excluded_holdout_engine_seeded": excluded,
+        "excluded_holdout": excluded,
+        "holdout_included_ids": sorted(included_holdout),
         "per_recording": per_rec,
         "summary": summary,
     }
@@ -350,10 +432,37 @@ def score(args) -> int:
 # --- gate ---------------------------------------------------------------------------------------
 
 
-def evaluate_gate(manifest: dict, bp: dict, py: dict, app_params: dict) -> dict:
-    """Pure gate decision. INCOMPLETE whenever the evidence is missing, stale or not the app's."""
+def evaluate_gate(
+    manifest: dict, bp: dict, py: dict, app_params: dict, db_prov: dict[str, dict | None]
+) -> dict:
+    """Pure gate decision. INCOMPLETE whenever the evidence is missing, stale or not the app's.
+
+    `db_prov` is provenance re-read from the app database at gate time; it, not the manifest or
+    the results, decides which holdout recordings are eligible.
+    """
     clips = manifest["clips"]
     problems: list[str] = []
+    excluded = []
+    eligible_holdout = []
+    for clip in clips:
+        sid = clip["tags"]["session_id"]
+        p = db_prov.get(sid)
+        if clip["split"] == "holdout" and clip["tags"].get("provenance") != p:
+            problems.append(
+                f"{clip['id']}: manifest provenance differs from the app database (re-run prepare)"
+            )
+        reasons = holdout_exclusion(clip, p)
+        if reasons:
+            excluded.append({"id": clip["id"], "reasons": reasons})
+            if any("fail closed" in r for r in reasons):
+                problems.append(f"{clip['id']}: holdout provenance unknown or untracked")
+        elif clip["split"] == "holdout":
+            eligible_holdout.append(clip["id"])
+    for name, r in (("basic-pitch", bp), ("pyin", py)):
+        if r.get("holdout_included_ids") != sorted(eligible_holdout):
+            problems.append(
+                f"{name} holdout scores do not cover exactly the eligible holdout recordings"
+            )
     ids = sorted(c["id"] for c in clips)
     current = fingerprint(clips)
     if manifest.get("fingerprint") != current:
@@ -373,7 +482,7 @@ def evaluate_gate(manifest: dict, bp: dict, py: dict, app_params: dict) -> dict:
     }:
         problems.append("basic-pitch was scored with parameters other than the app's")
 
-    c = counts(clips)
+    c = counts(clips, db_prov)
     below = []
     for cond, (n_dev, n_hold, n_notes) in MINIMUMS.items():
         dev, hold = c.get((cond, "dev"), {}), c.get((cond, "holdout"), {})
@@ -416,7 +525,8 @@ def evaluate_gate(manifest: dict, bp: dict, py: dict, app_params: dict) -> dict:
         "integrity_problems": problems,
         "missing_summaries": missing_summaries,
         "conditions_below_minimum": below,
-        "excluded_holdout_engine_seeded": bp.get("excluded_holdout_engine_seeded", []),
+        "excluded_holdout": excluded,
+        "eligible_holdout": sorted(eligible_holdout),
         "exploratory_D": (bp.get("summary", {}).get("holdout/D") or {}).get("onset"),
         "manifest_fingerprint": current,
         "thresholds": {
@@ -435,7 +545,10 @@ def gate(args) -> int:
     except FileNotFoundError as exc:
         print(f"INCOMPLETE: {exc.filename} missing (run prepare and score for both engines)")
         return 2
-    result = evaluate_gate(manifest, bp, py, app_bp_params())
+    db_prov = read_db_provenance(
+        Path(args.data_dir).resolve() / "jamrecall.sqlite3", manifest["clips"]
+    )
+    result = evaluate_gate(manifest, bp, py, app_bp_params(), db_prov)
     write_json(d / "real-gate.json", result)
     print(json.dumps(result, indent=1))
     return {"PASS": 0, "FAIL": 1, "INCOMPLETE": 2}[result["verdict"]]
@@ -451,7 +564,8 @@ def main() -> None:
     s = sub.add_parser("score")
     s.add_argument("method", choices=["basic-pitch", "pyin"])
     s.add_argument("--tune-on-dev", action="store_true")
-    sub.add_parser("gate")
+    g = sub.add_parser("gate")
+    g.add_argument("--data-dir", required=True, help="app data directory (provenance source)")
     args = ap.parse_args()
     sys.exit({"prepare": prepare, "score": score, "gate": gate}[args.cmd](args))
 

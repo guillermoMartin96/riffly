@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { E2E_DATA_ROOT } from '../playwright.config';
-import { installMic, MIC_MODE, recordPhrase, sha256 } from './helpers';
+import { installMic, MIC_MODE, recordPhrase, sha256, transcribeDisqualifying } from './helpers';
 
 // Manual-testing workflow (tech lead, 2026-10-09): record → transcribe → correct notes into a
 // reference annotation kept separate from model output → finalize → export → delete.
@@ -21,7 +21,7 @@ test('correct model output into a reference annotation, export it, then delete t
   // Only a real capture track reports applied settings (the webaudio injection has none).
   if (MIC_MODE === 'device') expect(session.capture_info.track_settings.echoCancellation).toBe(false);
 
-  await page.getByRole('button', { name: 'Transcribe' }).click();
+  await transcribeDisqualifying(page);
   await expect(page.getByTestId('transcription-status')).toHaveText('succeeded', { timeout: 60_000 });
   const model = await (await request.get(`/api/sessions/${sessionId}/transcriptions/latest`)).json();
   expect(model.notes.length).toBeGreaterThanOrEqual(3);
@@ -115,7 +115,7 @@ test('a holdout reference seeded from model output is flagged', async ({ page })
   await installMic(page);
   await page.goto('/');
   await recordPhrase(page, 2);
-  await page.getByRole('button', { name: 'Transcribe' }).click();
+  await transcribeDisqualifying(page);
   await expect(page.getByTestId('transcription-status')).toHaveText('succeeded', { timeout: 60_000 });
   const panel = page.getByTestId('annotation-panel');
   await panel.getByRole('button', { name: 'Start from model output' }).click();

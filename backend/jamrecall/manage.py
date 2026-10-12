@@ -15,7 +15,7 @@ import json
 import sys
 from pathlib import Path
 
-from jamrecall import annotations, datastore, store
+from jamrecall import annotations, datastore, provenance, store
 from jamrecall.config import Settings
 from jamrecall.db import migrate, transaction
 
@@ -64,6 +64,12 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     if a
                     else "-"
+                )
+                elig = provenance.status(s)
+                ann += (
+                    "  holdout-eligible"
+                    if elig["holdout_eligible"]
+                    else (f"  NOT holdout-eligible: {elig['ineligible_reason']}")
                 )
                 print(
                     f"{s['id']}  {s['created_at']}  {s['duration_seconds']:7.2f}s  "

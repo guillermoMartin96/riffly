@@ -47,7 +47,7 @@ def test_capture_info_stored_and_validated(fixture_client, sid):
 
 def test_annotation_is_separate_from_model_output(fixture_client, sid):
     c = fixture_client
-    c.post(f"/api/sessions/{sid}/transcriptions")
+    c.post(f"/api/sessions/{sid}/transcriptions?confirm_disqualify=true")
     model = c.get(f"/api/sessions/{sid}/transcriptions/latest").json()
     seed = [n(x["start_seconds"], x["end_seconds"], x["midi_pitch"]) for x in model["notes"]]
     # correct: delete a false positive, fix a pitch, adjust timing, add a missed note
@@ -112,7 +112,7 @@ def test_finalize_locks_split_and_edits(fixture_client, sid):
 
 def test_export_zip(fixture_client, sid):
     c = fixture_client
-    c.post(f"/api/sessions/{sid}/transcriptions")
+    c.post(f"/api/sessions/{sid}/transcriptions?confirm_disqualify=true")
     put(c, sid, [n(0.25, 0.65, 48)], split="dev", condition="A", annotator="me")
     r = c.get(f"/api/sessions/{sid}/export")
     assert r.status_code == 200 and r.headers["content-type"] == "application/zip"
@@ -141,7 +141,7 @@ def test_export_zip(fixture_client, sid):
 
 def test_delete_session_removes_everything(fixture_client, sid, tmp_path):
     c = fixture_client
-    c.post(f"/api/sessions/{sid}/transcriptions")
+    c.post(f"/api/sessions/{sid}/transcriptions?confirm_disqualify=true")
     put(c, sid, [n(0.1, 0.2, 60)])
     c.post(f"/api/sessions/{sid}/riffs", json={"title": "x", "start_seconds": 0, "end_seconds": 1})
     media = tmp_path / "data" / "media" / "sessions" / sid

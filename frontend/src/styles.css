@@ -110,3 +110,7 @@ select { font: inherit; padding: 0.25rem; border: 1px solid var(--line); border-
 .pitch-cell input { width: 3.5rem; }
 input.invalid { border-color: var(--error); }
 .actions { white-space: nowrap; }
+.eligibility { font-size: 0.85rem; margin: 0.3rem 0; }
+.eligibility.ok { color: rgb(46, 140, 80); }
+.eligibility.not { color: var(--warn-ink); background: var(--warn-bg); padding: 0.25rem 0.5rem; border-radius: 6px; }
+.warn-box { border-color: var(--error); background: var(--warn-bg); color: var(--warn-ink); }

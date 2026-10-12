@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { readdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { E2E_DATA_ROOT } from '../playwright.config';
-import { installMic, recordPhrase } from './helpers';
+import { installMic, recordPhrase, transcribeDisqualifying } from './helpers';
 
 // This project's backend is configured with the TEST-ONLY "failing" engine.
 
@@ -39,7 +39,7 @@ test('processing failure is shown and persisted; missing audio is reported', asy
   await page.goto('/');
   const sessionId = await recordPhrase(page, 2);
 
-  await page.getByRole('button', { name: 'Transcribe' }).click();
+  await transcribeDisqualifying(page);
   await expect(page.getByTestId('transcription-status')).toHaveText('failed', { timeout: 30_000 });
   await expect(page.getByTestId('transcription-error')).toContainText('always fails');
   await expect(page.getByTestId('tab-note')).toHaveCount(0);

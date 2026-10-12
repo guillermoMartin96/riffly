@@ -76,6 +76,16 @@ def check_numbers() -> None:
             problems.append(f"{name}: minimum number of gating takes should be stated as {total}")
 
 
+def check_gate_commands() -> None:
+    """The gate must read the app database (the provenance source); flag commands without it."""
+    for doc in DOCS:
+        for ln in doc.read_text().splitlines():
+            if "jamrecall_bench.real gate" in ln and "--data-dir" not in ln:
+                problems.append(
+                    f"{doc.relative_to(ROOT)}: gate command without --data-dir: {ln.strip()}"
+                )
+
+
 def check_register() -> None:
     register = (ROOT / "docs/decisions/README.md").read_text()
     for dr in sorted((ROOT / "docs/decisions/requests").glob("DR-*.md")):
@@ -92,6 +102,7 @@ def check_register() -> None:
 
 check_paths()
 check_numbers()
+check_gate_commands()
 check_register()
 if problems:
     print("Documentation consistency problems:")

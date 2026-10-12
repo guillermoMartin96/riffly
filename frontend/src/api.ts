@@ -11,6 +11,18 @@ export interface Session {
   status: 'ready' | 'audio_missing';
   riff_count?: number;
   capture_info: Record<string, unknown> | null;
+  provenance: Provenance;
+}
+
+/** Holdout contamination provenance (DR-0004 guard). Read-only; the server decides. */
+export interface Provenance {
+  version: number;
+  tracked_since: string | null;
+  model_exposed_at: string | null;
+  contaminated_at: string | null;
+  contamination_reason: string | null;
+  holdout_eligible: boolean;
+  ineligible_reason: string | null;
 }
 
 export type Split = 'dev' | 'holdout';
@@ -143,8 +155,13 @@ export const api = {
   audioUrl: (id: string) => `/api/sessions/${id}/audio`,
   peaks: (id: string, n: number) =>
     request<{ duration_seconds: number; peaks: number[] }>(`/api/sessions/${id}/peaks?n=${n}`),
-  startTranscription: (id: string) =>
-    request<Transcription>(`/api/sessions/${id}/transcriptions`, { method: 'POST' }),
+  // Without confirm, the server refuses (409 would_disqualify_holdout) if this would disqualify
+  // the recording as a holdout reference.
+  startTranscription: (id: string, confirmDisqualify = false) =>
+    request<Transcription>(
+      `/api/sessions/${id}/transcriptions${confirmDisqualify ? '?confirm_disqualify=true' : ''}`,
+      { method: 'POST' },
+    ),
   latestTranscription: (id: string) =>
     request<Transcription>(`/api/sessions/${id}/transcriptions/latest`),
   listRiffs: () => request<Riff[]>('/api/riffs'),
@@ -170,6 +187,9 @@ export const api = {
     }),
   finalizeAnnotation: (id: string) =>
     request<Annotation>(`/api/sessions/${id}/annotation/finalize`, { method: 'POST' }),
-  reopenAnnotation: (id: string) =>
-    request<Annotation>(`/api/sessions/${id}/annotation/reopen`, { method: 'POST' }),
+  reopenAnnotation: (id: string, confirmDisqualify = false) =>
+    request<Annotation>(
+      `/api/sessions/${id}/annotation/reopen${confirmDisqualify ? '?confirm_disqualify=true' : ''}`,
+      { method: 'POST' },
+    ),
 };

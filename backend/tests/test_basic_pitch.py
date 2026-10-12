@@ -68,7 +68,10 @@ def test_browser_formats_transcribe_with_aligned_onsets(bp_client, mime, sr, enc
     assert s.status_code == 201, s.text
     sid = s.json()["id"]
     assert abs(s.json()["duration_seconds"] - y.size / sr) < 0.06
-    assert bp_client.post(f"/api/sessions/{sid}/transcriptions").status_code == 202
+    assert (
+        bp_client.post(f"/api/sessions/{sid}/transcriptions?confirm_disqualify=true").status_code
+        == 202
+    )
     t = bp_client.get(f"/api/sessions/{sid}/transcriptions/latest").json()
     assert t["status"] == "succeeded", t["error"]
     assert t["test_only"] is False and t["engine"] == "basic-pitch"
@@ -87,7 +90,7 @@ def test_retranscription_keeps_history(bp_client):
     y, _ = pluck_phrase(PITCHES[:3], 22050)
     sid = upload(bp_client, wav_bytes(y, 22050)).json()["id"]
     for _ in range(2):
-        bp_client.post(f"/api/sessions/{sid}/transcriptions")
+        bp_client.post(f"/api/sessions/{sid}/transcriptions?confirm_disqualify=true")
     hist = bp_client.get(f"/api/sessions/{sid}/transcriptions").json()
     assert len(hist) == 2
     assert all(h["status"] == "succeeded" and h["note_count"] == 3 for h in hist)
